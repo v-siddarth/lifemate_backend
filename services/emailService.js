@@ -7,13 +7,22 @@ const nodemailer = require('nodemailer');
 
 // Create transporter
 const createTransporter = () => {
+  const emailHost = process.env.EMAIL_HOST || 'smtp.gmail.com';
+  const emailPort = Number(process.env.EMAIL_PORT || 587);
+  const emailUser = (process.env.EMAIL_USER || '').trim();
+  const emailPass = (process.env.EMAIL_PASS || '').replace(/\s+/g, '');
+
+  if (!emailUser || !emailPass) {
+    throw new Error('EMAIL_USER and EMAIL_PASS must be configured for sending emails.');
+  }
+
   return nodemailer.createTransport({
-    host: process.env.EMAIL_HOST || 'smtp.gmail.com',
-    port: process.env.EMAIL_PORT || 587,
-    secure: false, // true for 465, false for other ports
+    host: emailHost,
+    port: emailPort,
+    secure: emailPort === 465, // true for 465, false for 587
     auth: {
-      user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASS,
+      user: emailUser,
+      pass: emailPass,
     },
   });
 };
@@ -265,6 +274,72 @@ const sendPasswordResetEmail = async (email, token, firstName) => {
 };
 
 /**
+ * Send OTP email
+ * @param {string} email - Recipient email
+ * @param {string} firstName - User's first name
+ * @param {string} otp - One-time password
+ * @param {'register'|'forgot_password'} purpose - OTP purpose
+ */
+const sendOtpEmail = async (email, firstName, otp, purpose) => {
+  try {
+    const transporter = createTransporter();
+    const title = purpose === 'register' ? 'Registration OTP' : 'Password Reset OTP';
+    const description =
+      purpose === 'register'
+        ? 'Use this OTP to complete your account registration.'
+        : 'Use this OTP to reset your account password.';
+
+    const mailOptions = {
+      from: `"LifeMate" <${process.env.EMAIL_FROM || 'noreply@lifemate.com'}>`,
+      to: email,
+      subject: `${title} - LifeMate`,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center;">
+            <h1 style="color: white; margin: 0; font-size: 28px;">LifeMate</h1>
+            <p style="color: white; margin: 10px 0 0 0; font-size: 16px;">Healthcare Job Platform</p>
+          </div>
+
+          <div style="padding: 30px; background: #f8f9fa;">
+            <h2 style="color: #333; margin-bottom: 20px;">${title}</h2>
+
+            <p style="color: #666; line-height: 1.6; margin-bottom: 20px;">
+              Hello ${firstName || 'User'},
+            </p>
+
+            <p style="color: #666; line-height: 1.6; margin-bottom: 20px;">
+              ${description}
+            </p>
+
+            <div style="margin: 24px 0; text-align: center;">
+              <span style="display: inline-block; background: #ffffff; border: 1px solid #d1d5db; border-radius: 8px; letter-spacing: 8px; font-size: 28px; font-weight: 700; color: #111827; padding: 14px 24px;">
+                ${otp}
+              </span>
+            </div>
+
+            <p style="color: #666; line-height: 1.6; margin-top: 24px; font-size: 14px;">
+              This OTP will expire in 10 minutes. For security reasons, do not share this code with anyone.
+            </p>
+          </div>
+
+          <div style="background: #333; padding: 20px; text-align: center;">
+            <p style="color: #999; margin: 0; font-size: 14px;">© 2024 LifeMate. All rights reserved.</p>
+            <p style="color: #999; margin: 5px 0 0 0; font-size: 12px;">This is an automated email. Please do not reply.</p>
+          </div>
+        </div>
+      `,
+    };
+
+    const result = await transporter.sendMail(mailOptions);
+    console.log('OTP email sent successfully:', result.messageId);
+    return result;
+  } catch (error) {
+    console.error('Error sending OTP email:', error);
+    throw error;
+  }
+};
+
+/**
  * Send job application notification email
  * @param {string} employerEmail - Employer's email
  * @param {string} employerName - Employer's name
@@ -510,6 +585,7 @@ module.exports = {
   sendApplicationNotificationEmail,
   sendInterviewInvitationEmail,
   sendWelcomeEmail,
+  sendOtpEmail,
   // Added exports below
   sendApplicationSubmittedToJobSeeker,
   sendApplicationStatusUpdateToJobSeeker,

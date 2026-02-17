@@ -111,6 +111,52 @@ const validateLogin = (req, res, next) => {
 };
 
 /**
+ * OTP request validation
+ */
+const validateOtpRequest = (req, res, next) => {
+  const { email } = req.body;
+  const errors = [];
+
+  if (!email) {
+    errors.push({ field: 'email', message: 'Email is required' });
+  } else if (!/^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/.test(email)) {
+    errors.push({ field: 'email', message: 'Please enter a valid email address' });
+  }
+
+  if (errors.length > 0) {
+    return validationErrorResponse(res, errors);
+  }
+
+  next();
+};
+
+/**
+ * OTP verification validation
+ */
+const validateOtpVerification = (req, res, next) => {
+  const { email, otp } = req.body;
+  const errors = [];
+
+  if (!email) {
+    errors.push({ field: 'email', message: 'Email is required' });
+  } else if (!/^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/.test(email)) {
+    errors.push({ field: 'email', message: 'Please enter a valid email address' });
+  }
+
+  if (!otp) {
+    errors.push({ field: 'otp', message: 'OTP is required' });
+  } else if (!/^\d{6}$/.test(String(otp))) {
+    errors.push({ field: 'otp', message: 'OTP must be a 6-digit number' });
+  }
+
+  if (errors.length > 0) {
+    return validationErrorResponse(res, errors);
+  }
+
+  next();
+};
+
+/**
  * Password reset validation
  */
 const validatePasswordReset = (req, res, next) => {
@@ -293,6 +339,8 @@ module.exports = {
   validate,
   validateRegistration,
   validateLogin,
+  validateOtpRequest,
+  validateOtpVerification,
   validatePasswordReset,
   validatePasswordChange,
   validateProfileUpdate,

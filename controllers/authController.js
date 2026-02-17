@@ -1,4 +1,6 @@
+const crypto = require('crypto');
 const User = require('../models/User');
+const Otp = require('../models/Otp');
 const JobSeeker = require('../models/JobSeeker');
 const { generateTokens, verifyRefreshToken, verifyOAuthExchangeToken } = require('../utils/jwt');
 const {
@@ -30,6 +32,206 @@ const setRefreshTokenCookie = (res, refreshToken) => {
 
 const clearRefreshTokenCookie = (res) => {
   res.clearCookie('refreshToken', getRefreshCookieClearOptions());
+};
+
+const OTP_TTL_MS = 10 * 60 * 1000;
+const OTP_RESEND_COOLDOWN_MS = 60 * 1000;
+const OTP_MAX_ATTEMPTS = 5;
+
+const createOtpCode = () => String(Math.floor(100000 + Math.random() * 900000));
+
+const hashOtp = (email, otp, purpose) => {
+  const secret = process.env.OTP_SECRET || process.env.JWT_SECRET || 'lifemate-otp-secret';
+  return crypto.createHash('sha256').update(`${email}:${purpose}:${otp}:${secret}`).digest('hex');
+};
+
+const validateStrongPassword = (password) => {
+  if (!password) return 'Password is required';
+  if (password.length < 6) return 'Password must be at least 6 characters long';
+  if (!/(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/.test(password)) {
+    return 'Password must contain at least one uppercase letter, one lowercase letter, and one number';
+  }
+  return null;
+};
+
+const issueOtp = async ({ email, purpose, firstName }) => {
+  const normalizedEmail = String(email || '').trim().toLowerCase();
+  const existingOtp = await Otp.findOne({ email: normalizedEmail, purpose });
+  const now = Date.now();
+
+  if (existingOtp && existingOtp.lastSentAt && now - existingOtp.lastSentAt.getTime() < OTP_RESEND_COOLDOWN_MS) {
+    const secondsRemaining = Math.ceil(
+      (OTP_RESEND_COOLDOWN_MS - (now - existingOtp.lastSentAt.getTime())) / 1000
+    );
+    const error = new Error(`Please wait ${secondsRemaining} seconds before requesting a new OTP.`);
+    error.statusCode = 429;
+    throw error;
+  }
+
+  const otp = createOtpCode();
+  const otpHash = hashOtp(normalizedEmail, otp, purpose);
+  const expiresAt = new Date(now + OTP_TTL_MS);
+
+  let deliveredViaEmail = true;
+  try {
+    await emailService.sendOtpEmail(normalizedEmail, firstName, otp, purpose);
+  } catch (error) {
+    const allowDevOtpFallback =
+      process.env.NODE_ENV !== 'production' && String(process.env.OTP_DEV_FALLBACK || '').toLowerCase() === 'true';
+
+    if (!allowDevOtpFallback) {
+      throw error;
+    }
+
+    deliveredViaEmail = false;
+    console.warn('OTP email delivery failed, using development fallback mode.');
+    console.warn(`DEV_OTP (${purpose}) for ${normalizedEmail}: ${otp}`);
+  }
+
+  await Otp.findOneAndUpdate(
+    { email: normalizedEmail, purpose },
+    {
+      $set: {
+        otpHash,
+        expiresAt,
+        attempts: 0,
+        lastSentAt: new Date(now),
+      },
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
+
+  return { deliveredViaEmail };
+};
+
+const verifyOtpRecord = async ({ email, purpose, otp }) => {
+  const normalizedEmail = String(email || '').trim().toLowerCase();
+  const otpRecord = await Otp.findOne({ email: normalizedEmail, purpose });
+
+  if (!otpRecord) {
+    return { success: false, message: 'Invalid or expired OTP.' };
+  }
+
+  if (otpRecord.expiresAt.getTime() <= Date.now()) {
+    await Otp.deleteOne({ _id: otpRecord._id });
+    return { success: false, message: 'OTP has expired. Please request a new one.' };
+  }
+
+  if (otpRecord.attempts >= OTP_MAX_ATTEMPTS) {
+    await Otp.deleteOne({ _id: otpRecord._id });
+    return { success: false, message: 'OTP verification failed too many times. Please request a new OTP.' };
+  }
+
+  const expectedHash = hashOtp(normalizedEmail, otp, purpose);
+  if (otpRecord.otpHash !== expectedHash) {
+    otpRecord.attempts += 1;
+    await otpRecord.save();
+    return { success: false, message: 'Invalid OTP.' };
+  }
+
+  await Otp.deleteOne({ _id: otpRecord._id });
+  return { success: true };
+};
+
+const sendRegistrationOtp = async (req, res) => {
+  try {
+    const { email, firstName } = req.body;
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+
+    const existingUser = await User.findOne({ email: normalizedEmail });
+    if (existingUser) {
+      return errorResponse(res, 400, 'User already exists with this email address.');
+    }
+
+    try {
+      const otpResult = await issueOtp({ email: normalizedEmail, purpose: 'register', firstName });
+      const message = otpResult.deliveredViaEmail
+        ? 'OTP sent to your email address.'
+        : 'OTP generated in development fallback mode. Check backend logs.';
+      return successResponse(res, 200, message);
+    } catch (otpError) {
+      if (otpError.statusCode === 429) {
+        return errorResponse(res, 429, otpError.message);
+      }
+      if (otpError.code === 'EAUTH') {
+        return errorResponse(
+          res,
+          500,
+          'Email service authentication failed. Please verify EMAIL_USER/EMAIL_PASS configuration.'
+        );
+      }
+      console.error('Registration OTP send error:', otpError);
+      return errorResponse(res, 500, 'Failed to send OTP. Please try again.');
+    }
+  } catch (error) {
+    console.error('Registration OTP error:', error);
+    return errorResponse(res, 500, 'Failed to process OTP request. Please try again.');
+  }
+};
+
+const verifyRegistrationOtp = async (req, res) => {
+  try {
+    const { email, otp, password, firstName, lastName, role, phone } = req.body;
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+
+    const existingUser = await User.findOne({ email: normalizedEmail });
+    if (existingUser) {
+      return errorResponse(res, 400, 'User already exists with this email address.');
+    }
+
+    const otpResult = await verifyOtpRecord({ email: normalizedEmail, purpose: 'register', otp });
+    if (!otpResult.success) {
+      return errorResponse(res, 400, otpResult.message);
+    }
+
+    const user = await User.create({
+      email: normalizedEmail,
+      password,
+      firstName,
+      lastName,
+      role,
+      phone,
+    });
+
+    const verificationToken = user.generateEmailVerificationToken();
+    await user.save();
+
+    if (role === 'jobseeker') {
+      await JobSeeker.create({ user: user._id });
+    }
+
+    try {
+      await emailService.sendVerificationEmail(user.email, verificationToken, user.firstName);
+    } catch (emailError) {
+      console.error('Verification email sending failed:', emailError);
+    }
+
+    const tokens = generateTokens(user._id, user.role);
+    await user.addRefreshToken(tokens.refreshToken);
+    setRefreshTokenCookie(res, tokens.refreshToken);
+
+    return successResponse(
+      res,
+      201,
+      'User registered successfully. Please check your email for verification.',
+      {
+        user: buildUserResponse(user),
+        accessToken: tokens.accessToken,
+      }
+    );
+  } catch (error) {
+    console.error('Registration OTP verification error:', error);
+
+    if (error.name === 'ValidationError') {
+      const errors = Object.values(error.errors).map((err) => ({
+        field: err.path,
+        message: err.message,
+      }));
+      return validationErrorResponse(res, errors);
+    }
+
+    return errorResponse(res, 500, 'Registration failed. Please try again.');
+  }
 };
 
 const register = async (req, res) => {
@@ -283,6 +485,80 @@ const resendVerificationEmail = async (req, res) => {
   }
 };
 
+const sendForgotPasswordOtp = async (req, res) => {
+  try {
+    const { email } = req.body;
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+    const user = await User.findOne({ email: normalizedEmail });
+
+    if (!user) {
+      return successResponse(res, 200, 'If the email exists, an OTP has been sent.');
+    }
+
+    try {
+      const otpResult = await issueOtp({
+        email: normalizedEmail,
+        purpose: 'forgot_password',
+        firstName: user.firstName,
+      });
+      const message = otpResult.deliveredViaEmail
+        ? 'If the email exists, an OTP has been sent.'
+        : 'OTP generated in development fallback mode. Check backend logs.';
+      return successResponse(res, 200, message);
+    } catch (otpError) {
+      if (otpError.statusCode === 429) {
+        return errorResponse(res, 429, otpError.message);
+      }
+      if (otpError.code === 'EAUTH') {
+        return errorResponse(
+          res,
+          500,
+          'Email service authentication failed. Please verify EMAIL_USER/EMAIL_PASS configuration.'
+        );
+      }
+      console.error('Forgot password OTP send error:', otpError);
+      return errorResponse(res, 500, 'Failed to send OTP. Please try again.');
+    }
+  } catch (error) {
+    console.error('Forgot password OTP error:', error);
+    return errorResponse(res, 500, 'Password reset request failed. Please try again.');
+  }
+};
+
+const verifyForgotPasswordOtp = async (req, res) => {
+  try {
+    const { email, otp, password } = req.body;
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+
+    const passwordError = validateStrongPassword(password);
+    if (passwordError) {
+      return validationErrorResponse(res, [{ field: 'password', message: passwordError }]);
+    }
+
+    const user = await User.findOne({ email: normalizedEmail }).select('+password');
+    if (!user) {
+      return errorResponse(res, 400, 'Invalid OTP or email.');
+    }
+
+    const otpResult = await verifyOtpRecord({ email: normalizedEmail, purpose: 'forgot_password', otp });
+    if (!otpResult.success) {
+      return errorResponse(res, 400, otpResult.message);
+    }
+
+    user.password = password;
+    user.passwordResetToken = undefined;
+    user.passwordResetExpires = undefined;
+    await user.save();
+    await user.clearAllRefreshTokens();
+    clearRefreshTokenCookie(res);
+
+    return successResponse(res, 200, 'Password reset successfully.');
+  } catch (error) {
+    console.error('Forgot password OTP verification error:', error);
+    return errorResponse(res, 500, 'Password reset failed. Please try again.');
+  }
+};
+
 const forgotPassword = async (req, res) => {
   try {
     const { email } = req.body;
@@ -431,6 +707,8 @@ const changePassword = async (req, res) => {
 };
 
 module.exports = {
+  sendRegistrationOtp,
+  verifyRegistrationOtp,
   register,
   login,
   logout,
@@ -438,6 +716,8 @@ module.exports = {
   oauthExchange,
   verifyEmail,
   resendVerificationEmail,
+  sendForgotPasswordOtp,
+  verifyForgotPasswordOtp,
   forgotPassword,
   resetPassword,
   getProfile,
