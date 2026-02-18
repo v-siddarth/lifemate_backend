@@ -1,5 +1,6 @@
 const JobSeeker = require('../models/JobSeeker');
 const { uploadToCloudinary, deleteFromCloudinary } = require('../config/cloudinary');
+const { uploadToDrive, deleteFromDrive, RESUME_FOLDER_ID } = require('../config/googleDrive');
 const { successResponse, errorResponse, notFoundResponse, validationErrorResponse } = require('../utils/response');
 
 // helper to find JS profile
@@ -214,7 +215,7 @@ exports.updateMyProfile = async (req, res) => {
   }
 };
 
-// POST /api/jobseeker/resume
+// POST /api/jobseeker/resume  —  NOW USES GOOGLE DRIVE
 exports.uploadResume = async (req, res) => {
   try {
     const js = await getJobSeekerByUser(req.user._id);
@@ -222,18 +223,42 @@ exports.uploadResume = async (req, res) => {
 
     if (!req.file) return errorResponse(res, 400, 'No resume file uploaded');
 
-    // delete previous
-    if (js.resume && js.resume.publicId) {
-      try { await deleteFromCloudinary(js.resume.publicId); } catch (e) {}
+    // Only allow PDF files
+    if (req.file.mimetype !== 'application/pdf') {
+      return errorResponse(res, 400, 'Only PDF files are allowed for resume upload');
     }
 
-    const up = await uploadToCloudinary(req.file.buffer, `lifemate/jobseekers/${js._id}`, 'raw');
+    // Delete previous resume from Google Drive (if exists)
+    if (js.resume && js.resume.driveFileId) {
+      try {
+        await deleteFromDrive(js.resume.driveFileId);
+      } catch (e) {
+        console.error('Failed to delete old resume from Drive:', e.message);
+      }
+    }
+    // Also clean up old Cloudinary resume if migrating
+    if (js.resume && js.resume.publicId) {
+      try {
+        await deleteFromCloudinary(js.resume.publicId);
+      } catch (e) {
+        console.error('Failed to delete old resume from Cloudinary:', e.message);
+      }
+    }
+
+    // Upload to Google Drive
+    const driveResult = await uploadToDrive(
+      req.file.buffer,
+      `resume_${js._id}_${Date.now()}.pdf`,
+      RESUME_FOLDER_ID
+    );
+
     js.resume = {
-      url: up.secure_url,
+      url: driveResult.webViewLink,
       filename: req.file.originalname,
       uploadedAt: new Date(),
-      publicId: up.public_id,
-      bytes: up.bytes,
+      driveFileId: driveResult.fileId,
+      bytes: driveResult.size,
+      storageType: 'google_drive',
     };
     await js.save();
 
@@ -244,15 +269,29 @@ exports.uploadResume = async (req, res) => {
   }
 };
 
-// DELETE /api/jobseeker/resume
+// DELETE /api/jobseeker/resume  —  NOW USES GOOGLE DRIVE
 exports.deleteResume = async (req, res) => {
   try {
     const js = await getJobSeekerByUser(req.user._id);
     if (!js) return notFoundResponse(res, 'Job seeker profile not found');
 
-    if (js.resume && js.resume.publicId) {
-      try { await deleteFromCloudinary(js.resume.publicId); } catch (e) {}
+    // Delete from Google Drive
+    if (js.resume && js.resume.driveFileId) {
+      try {
+        await deleteFromDrive(js.resume.driveFileId);
+      } catch (e) {
+        console.error('Failed to delete resume from Drive:', e.message);
+      }
     }
+    // Fallback: delete from Cloudinary if old resume
+    if (js.resume && js.resume.publicId) {
+      try {
+        await deleteFromCloudinary(js.resume.publicId);
+      } catch (e) {
+        console.error('Failed to delete resume from Cloudinary:', e.message);
+      }
+    }
+
     js.resume = undefined;
     await js.save();
 

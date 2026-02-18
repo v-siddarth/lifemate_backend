@@ -1,7 +1,7 @@
 const Resume = require('../models/Resume');
 const JobSeeker = require('../models/JobSeeker');
 const { generateAndUploadResumePDF } = require('../services/pdfService');
-const { cloudinary } = require('../config/cloudinary');
+const { deleteFromDrive } = require('../config/googleDrive');
 const {
   successResponse,
   errorResponse,
@@ -112,7 +112,7 @@ exports.updateResume = async (req, res) => {
       return notFoundResponse(res, 'Resume not found');
     }
 
-    const protectedFields = ['_id', 'userId', '__v', 'createdAt', 'updatedAt', 'stats', 'pdfUrl', 'pdfPublicId'];
+    const protectedFields = ['_id', 'userId', '__v', 'createdAt', 'updatedAt', 'stats', 'pdfUrl', 'pdfDriveFileId'];
     for (const field of protectedFields) {
       if (field in updateData) delete updateData[field];
     }
@@ -122,11 +122,20 @@ exports.updateResume = async (req, res) => {
 
     if (regeneratePdf) {
       try {
+        // Delete old PDF from Drive if it exists
+        if (resume.pdfDriveFileId) {
+          try {
+            await deleteFromDrive(resume.pdfDriveFileId);
+          } catch (e) {
+            console.error('Failed to delete old PDF from Drive:', e.message);
+          }
+        }
+
         const jobSeeker = await JobSeeker.findOne({ user: userId });
         const pdfResult = await generateAndUploadResumePDF(resume.toObject(), jobSeeker._id.toString());
 
         resume.pdfUrl = pdfResult.url;
-        resume.pdfPublicId = pdfResult.publicId;
+        resume.pdfDriveFileId = pdfResult.driveFileId;
         await resume.save();
       } catch (pdfError) {
         console.error('PDF regeneration error:', pdfError);
@@ -158,13 +167,12 @@ exports.deleteResume = async (req, res) => {
       return notFoundResponse(res, 'Resume not found');
     }
 
-    if (resume.pdfPublicId) {
+    // Delete PDF from Google Drive
+    if (resume.pdfDriveFileId) {
       try {
-        await cloudinary.uploader.destroy(resume.pdfPublicId, {
-          resource_type: 'raw',
-        });
-      } catch (cloudinaryError) {
-        console.error('Cloudinary delete error:', cloudinaryError);
+        await deleteFromDrive(resume.pdfDriveFileId);
+      } catch (driveError) {
+        console.error('Drive delete error:', driveError.message);
       }
     }
 
@@ -212,11 +220,20 @@ exports.downloadResume = async (req, res) => {
     resume.stats.downloads += 1;
 
     if (!resume.pdfUrl) {
+      // Delete old Drive file if regenerating
+      if (resume.pdfDriveFileId) {
+        try {
+          await deleteFromDrive(resume.pdfDriveFileId);
+        } catch (e) {
+          console.error('Failed to delete old PDF from Drive:', e.message);
+        }
+      }
+
       const jobSeeker = await JobSeeker.findOne({ user: userId });
       const pdfResult = await generateAndUploadResumePDF(resume.toObject(), jobSeeker._id.toString());
 
       resume.pdfUrl = pdfResult.url;
-      resume.pdfPublicId = pdfResult.publicId;
+      resume.pdfDriveFileId = pdfResult.driveFileId;
     }
 
     await resume.save();
@@ -241,12 +258,21 @@ exports.generatePDF = async (req, res) => {
       return notFoundResponse(res, 'Resume not found');
     }
 
+    // Delete old Drive file before regenerating
+    if (resume.pdfDriveFileId) {
+      try {
+        await deleteFromDrive(resume.pdfDriveFileId);
+      } catch (e) {
+        console.error('Failed to delete old PDF from Drive:', e.message);
+      }
+    }
+
     const jobSeeker = await JobSeeker.findOne({ user: userId });
 
     const pdfResult = await generateAndUploadResumePDF(resume.toObject(), jobSeeker._id.toString());
 
     resume.pdfUrl = pdfResult.url;
-    resume.pdfPublicId = pdfResult.publicId;
+    resume.pdfDriveFileId = pdfResult.driveFileId;
     await resume.save();
 
     return successResponse(res, 200, 'PDF generated successfully', {

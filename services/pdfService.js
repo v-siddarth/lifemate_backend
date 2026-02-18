@@ -1,9 +1,9 @@
 const PDFDocument = require("pdfkit");
-const { uploadToCloudinary } = require("../config/cloudinary");
+const { uploadToDrive, RESUME_FOLDER_ID } = require("../config/googleDrive");
 
 /**
  * PDF Service for generating resume PDFs
- * Uses PDFKit for PDF generation
+ * Uses PDFKit for PDF generation and Google Drive for storage
  */
 
 /**
@@ -86,6 +86,10 @@ async function generateResumePDF(resumeData) {
 
       // 1. HEADER - Personal Information
       const { personalInfo } = resumeData;
+      if (!personalInfo || !personalInfo.fullName) {
+        return reject(new Error("Personal info with fullName is required to generate PDF"));
+      }
+
       doc
         .fontSize(26)
         .font("Helvetica-Bold")
@@ -121,10 +125,10 @@ async function generateResumePDF(resumeData) {
 
       // Add horizontal line after contact info
       doc.moveDown(0.3);
-      const lineY = doc.y;
+      const headerLineY = doc.y;
       doc
-        .moveTo(doc.page.margins.left, lineY)
-        .lineTo(doc.page.width - doc.page.margins.right, lineY)
+        .moveTo(doc.page.margins.left, headerLineY)
+        .lineTo(doc.page.width - doc.page.margins.right, headerLineY)
         .strokeColor("#CCCCCC")
         .lineWidth(1)
         .stroke();
@@ -288,11 +292,11 @@ async function generateResumePDF(resumeData) {
           visibleSkills.forEach((skill, index) => {
             const skillText = skill.name;
             doc.fontSize(9).font("Helvetica");
-            const textWidth = doc.widthOfString(skillText);
-            const badgeWidth = textWidth + badgePadding * 2;
-            const pageWidth = doc.page.width - doc.page.margins.right;
+            const textWidthVal = doc.widthOfString(skillText);
+            const badgeWidth = textWidthVal + badgePadding * 2;
+            const pageWidthVal = doc.page.width - doc.page.margins.right;
 
-            if (xPos + badgeWidth > pageWidth && index > 0) {
+            if (xPos + badgeWidth > pageWidthVal && index > 0) {
               xPos = doc.page.margins.left;
               currentLineY += lineHeight;
             }
@@ -306,7 +310,7 @@ async function generateResumePDF(resumeData) {
               .font("Helvetica")
               .fillColor("#333333")
               .text(skillText, xPos + badgePadding, currentLineY + 4, {
-                width: textWidth,
+                width: textWidthVal,
                 lineBreak: false,
               });
 
@@ -400,7 +404,7 @@ async function generateResumePDF(resumeData) {
         }
       }
 
-      // CERTIFICATIONS SECTION (only if exists)
+      // CERTIFICATIONS SECTION
       if (resumeData.certifications && resumeData.certifications.length > 0) {
         const visibleCerts = resumeData.certifications.filter(
           (cert) => cert.isVisible !== false
@@ -409,21 +413,18 @@ async function generateResumePDF(resumeData) {
           addSectionHeader("CERTIFICATIONS");
 
           visibleCerts.forEach((cert, index) => {
-            // Certification name (bold)
             doc
               .fontSize(10)
               .font("Helvetica-Bold")
               .fillColor("#000000")
               .text(`• ${cert.name}`, { align: "left" });
 
-            // Issuing organization (orange color like frontend)
             doc
               .fontSize(9)
               .font("Helvetica")
               .fillColor("#D2691E")
               .text(`  ${cert.issuingOrganization}`, { align: "left" });
 
-            // Issue and expiry dates on same line (gray)
             const dateInfo = [];
             if (cert.issueDate) {
               const issueDate = formatDate(cert.issueDate);
@@ -442,7 +443,6 @@ async function generateResumePDF(resumeData) {
                 .text(`  ${dateInfo.join(" | ")}`, { align: "left" });
             }
 
-            // Credential ID if available
             if (cert.credentialId) {
               doc
                 .fontSize(8)
@@ -486,31 +486,38 @@ async function generateResumePDF(resumeData) {
 }
 
 /**
- * Generate and upload resume PDF to Cloudinary
+ * Generate and upload resume PDF to Google Drive
  * @param {Object} resumeData - Resume data
- * @param {String} jobSeekerId - JobSeeker ID for folder organization
- * @returns {Promise<Object>} - Cloudinary upload result
+ * @param {String} jobSeekerId - JobSeeker ID for file naming
+ * @returns {Promise<Object>} - Drive upload result
  */
 async function generateAndUploadResumePDF(resumeData, jobSeekerId) {
   try {
+    // Validate required data before generating
+    if (!resumeData || !resumeData.personalInfo || !resumeData.personalInfo.fullName) {
+      throw new Error("Resume must have personalInfo with fullName to generate PDF");
+    }
+
     const pdfBuffer = await generateResumePDF(resumeData);
 
-    const uploadResult = await uploadToCloudinary(
+    const fileName = `${(resumeData.title || "resume").replace(/[^a-zA-Z0-9_-]/g, "_")}_${Date.now()}.pdf`;
+
+    const driveResult = await uploadToDrive(
       pdfBuffer,
-      `lifemate/resumes/${jobSeekerId}`,
-      "raw"
+      fileName,
+      RESUME_FOLDER_ID
     );
 
     return {
-      url: uploadResult.secure_url,
-      publicId: uploadResult.public_id,
-      bytes: uploadResult.bytes,
-      filename: `${resumeData.title || "resume"}_${Date.now()}.pdf`,
+      url: driveResult.webViewLink,
+      driveFileId: driveResult.fileId,
+      bytes: driveResult.size,
+      filename: fileName,
       generatedAt: new Date(),
     };
   } catch (error) {
-    console.error("PDF generation error:", error);
-    throw new Error("Failed to generate resume PDF");
+    console.error("PDF generation/upload error:", error);
+    throw new Error(`Failed to generate resume PDF: ${error.message}`);
   }
 }
 
