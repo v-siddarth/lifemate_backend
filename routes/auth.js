@@ -19,6 +19,8 @@ router.post('/register/verify-otp', validateRegistration, validateOtpVerificatio
 router.post('/login', validateLogin, authController.login);
 router.post('/refresh-token', authController.refreshToken);
 router.post('/oauth/exchange', authController.oauthExchange);
+router.post('/oauth/send-otp', authController.sendOauthOtp);
+router.post('/oauth/complete', authController.completeOauth);
 router.get('/verify-email/:token', authController.verifyEmail);
 router.post('/resend-verification', authController.resendVerificationEmail);
 router.post('/forgot-password', authController.forgotPassword);

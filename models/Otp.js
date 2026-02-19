@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 
-const OTP_PURPOSES = ['register', 'forgot_password'];
+const OTP_PURPOSES = ['register', 'forgot_password', 'oauth_login'];
 
 const otpSchema = new mongoose.Schema(
   {

@@ -35,6 +35,14 @@ const generateOAuthExchangeToken = (userId) => {
   );
 };
 
+const generateOAuthPendingToken = (payload) => {
+  return jwt.sign(
+    { ...payload, type: 'oauth_pending' },
+    process.env.JWT_SECRET,
+    { expiresIn: '15m' }
+  );
+};
+
 const verifyAccessToken = (token) => {
   return jwt.verify(token, process.env.JWT_SECRET);
 };
@@ -51,6 +59,14 @@ const verifyOAuthExchangeToken = (token) => {
   return decoded;
 };
 
+const verifyOAuthPendingToken = (token) => {
+  const decoded = jwt.verify(token, process.env.JWT_SECRET);
+  if (decoded.type !== 'oauth_pending') {
+    throw new Error('Invalid oauth pending token type');
+  }
+  return decoded;
+};
+
 const decodeToken = (token) => {
   return jwt.decode(token);
 };
@@ -60,8 +76,10 @@ module.exports = {
   generateRefreshToken,
   generateTokens,
   generateOAuthExchangeToken,
+  generateOAuthPendingToken,
   verifyAccessToken,
   verifyRefreshToken,
   verifyOAuthExchangeToken,
+  verifyOAuthPendingToken,
   decodeToken,
 };

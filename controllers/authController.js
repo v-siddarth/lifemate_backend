@@ -2,7 +2,13 @@ const crypto = require('crypto');
 const User = require('../models/User');
 const Otp = require('../models/Otp');
 const JobSeeker = require('../models/JobSeeker');
-const { generateTokens, verifyRefreshToken, verifyOAuthExchangeToken } = require('../utils/jwt');
+const Employer = require('../models/Employer');
+const {
+  generateTokens,
+  verifyRefreshToken,
+  verifyOAuthExchangeToken,
+  verifyOAuthPendingToken,
+} = require('../utils/jwt');
 const {
   successResponse,
   errorResponse,
@@ -133,6 +139,17 @@ const verifyOtpRecord = async ({ email, purpose, otp }) => {
   return { success: true };
 };
 
+const resolvePostLoginPath = async (user) => {
+  if (user.role === 'employer') {
+    const employerProfileExists = await Employer.exists({ user: user._id });
+    return employerProfileExists ? '/dashboard/employee/jobs' : '/dashboard/employee/profile/create';
+  }
+  if (user.role === 'admin') {
+    return '/dashboard/admin';
+  }
+  return '/dashboard/jobseeker';
+};
+
 const sendRegistrationOtp = async (req, res) => {
   try {
     const { email, firstName } = req.body;
@@ -209,6 +226,7 @@ const verifyRegistrationOtp = async (req, res) => {
     const tokens = generateTokens(user._id, user.role);
     await user.addRefreshToken(tokens.refreshToken);
     setRefreshTokenCookie(res, tokens.refreshToken);
+    const nextPath = await resolvePostLoginPath(user);
 
     return successResponse(
       res,
@@ -217,6 +235,7 @@ const verifyRegistrationOtp = async (req, res) => {
       {
         user: buildUserResponse(user),
         accessToken: tokens.accessToken,
+        nextPath,
       }
     );
   } catch (error) {
@@ -268,6 +287,7 @@ const register = async (req, res) => {
     const tokens = generateTokens(user._id, user.role);
     await user.addRefreshToken(tokens.refreshToken);
     setRefreshTokenCookie(res, tokens.refreshToken);
+    const nextPath = await resolvePostLoginPath(user);
 
     return successResponse(
       res,
@@ -276,6 +296,7 @@ const register = async (req, res) => {
       {
         user: buildUserResponse(user),
         accessToken: tokens.accessToken,
+        nextPath,
       }
     );
   } catch (error) {
@@ -328,10 +349,12 @@ const login = async (req, res) => {
     const tokens = generateTokens(user._id, user.role);
     await user.addRefreshToken(tokens.refreshToken);
     setRefreshTokenCookie(res, tokens.refreshToken);
+    const nextPath = await resolvePostLoginPath(user);
 
     return successResponse(res, 200, 'Login successful', {
       user: buildUserResponse(user),
       accessToken: tokens.accessToken,
+      nextPath,
     });
   } catch (error) {
     console.error('Login error:', error);
@@ -420,14 +443,157 @@ const oauthExchange = async (req, res) => {
     const tokens = generateTokens(user._id, user.role);
     await user.addRefreshToken(tokens.refreshToken);
     setRefreshTokenCookie(res, tokens.refreshToken);
+    const nextPath = await resolvePostLoginPath(user);
 
     return successResponse(res, 200, 'OAuth exchange successful', {
       user: buildUserResponse(user),
       accessToken: tokens.accessToken,
+      nextPath,
     });
   } catch (error) {
     console.error('OAuth exchange error:', error);
     return unauthorizedResponse(res, 'OAuth exchange failed. Please login again.');
+  }
+};
+
+const sendOauthOtp = async (req, res) => {
+  try {
+    const { pendingCode } = req.body || {};
+    if (!pendingCode) {
+      return errorResponse(res, 400, 'OAuth pending code is required.');
+    }
+
+    const pending = verifyOAuthPendingToken(pendingCode);
+    if (!pending?.email) {
+      return unauthorizedResponse(res, 'Invalid OAuth pending code.');
+    }
+
+    const otpResult = await issueOtp({
+      email: pending.email,
+      purpose: 'oauth_login',
+      firstName: pending.firstName || 'User',
+    });
+
+    const message = otpResult.deliveredViaEmail
+      ? 'OTP sent to your Google email address.'
+      : 'OTP generated in development fallback mode. Check backend logs.';
+    return successResponse(res, 200, message);
+  } catch (error) {
+    if (error.statusCode === 429) {
+      return errorResponse(res, 429, error.message);
+    }
+    if (error.name === 'TokenExpiredError' || error.name === 'JsonWebTokenError') {
+      return unauthorizedResponse(res, 'OAuth session expired. Please continue with Google again.');
+    }
+    if (error.code === 'EAUTH') {
+      return errorResponse(
+        res,
+        500,
+        'Email service authentication failed. Please verify EMAIL_USER/EMAIL_PASS configuration.'
+      );
+    }
+    console.error('OAuth OTP send error:', error);
+    return errorResponse(res, 500, 'Failed to send OTP. Please try again.');
+  }
+};
+
+const completeOauth = async (req, res) => {
+  try {
+    const { pendingCode, otp, role } = req.body || {};
+    if (!pendingCode) {
+      return errorResponse(res, 400, 'OAuth pending code is required.');
+    }
+    if (!otp) {
+      return errorResponse(res, 400, 'OTP is required.');
+    }
+    if (!/^\d{6}$/.test(String(otp))) {
+      return errorResponse(res, 400, 'OTP must be a 6-digit number.');
+    }
+
+    const pending = verifyOAuthPendingToken(pendingCode);
+    const requestedRole = String(role || pending.requestedRole || '').toLowerCase();
+    const selectedRole = ['jobseeker', 'employer'].includes(requestedRole) ? requestedRole : null;
+    const normalizedEmail = String(pending.email || '').trim().toLowerCase();
+
+    const otpResult = await verifyOtpRecord({ email: normalizedEmail, purpose: 'oauth_login', otp });
+    if (!otpResult.success) {
+      return errorResponse(res, 400, otpResult.message);
+    }
+
+    let user = null;
+    if (pending.existingUserId) {
+      user = await User.findById(pending.existingUserId);
+    }
+    if (!user && normalizedEmail) {
+      user = await User.findOne({ email: normalizedEmail });
+    }
+
+    if (user) {
+      if (!user.isActive || user.isBlocked || user.isLocked) {
+        return unauthorizedResponse(res, 'Account is not active.');
+      }
+
+      if (selectedRole && user.role !== selectedRole) {
+        return errorResponse(
+          res,
+          400,
+          `This email is already registered as ${user.role}. Please continue as ${user.role}.`
+        );
+      }
+
+      if (!user.oauthProvider || !user.oauthId) {
+        user.oauthProvider = 'google';
+        user.oauthId = pending.googleId;
+        user.isEmailVerified = true;
+        if (!user.profileImage && pending.profileImage) {
+          user.profileImage = pending.profileImage;
+        }
+        await user.save();
+      }
+
+      if (user.role === 'jobseeker') {
+        const existingJobseeker = await JobSeeker.findOne({ user: user._id }).select('_id').lean();
+        if (!existingJobseeker) {
+          await JobSeeker.create({ user: user._id });
+        }
+      }
+    } else {
+      if (!selectedRole) {
+        return errorResponse(res, 400, 'Please select a role to continue.');
+      }
+
+      user = await User.create({
+        email: normalizedEmail,
+        role: selectedRole,
+        firstName: pending.firstName || 'User',
+        lastName: pending.lastName || 'Google',
+        isEmailVerified: true,
+        oauthProvider: 'google',
+        oauthId: pending.googleId,
+        profileImage: pending.profileImage || null,
+      });
+
+      if (selectedRole === 'jobseeker') {
+        await JobSeeker.create({ user: user._id });
+      }
+    }
+
+    const tokens = generateTokens(user._id, user.role);
+    await user.addRefreshToken(tokens.refreshToken);
+    setRefreshTokenCookie(res, tokens.refreshToken);
+    const nextPath = await resolvePostLoginPath(user);
+
+    return successResponse(res, 200, 'OAuth login successful', {
+      user: buildUserResponse(user),
+      accessToken: tokens.accessToken,
+      nextPath,
+    });
+  } catch (error) {
+    if (error.name === 'TokenExpiredError' || error.name === 'JsonWebTokenError') {
+      return unauthorizedResponse(res, 'OAuth session expired. Please continue with Google again.');
+    }
+    console.error('OAuth completion error:', error);
+    return errorResponse(res, 500, 'Failed to complete OAuth login. Please try again.');
   }
 };
 
@@ -714,6 +880,8 @@ module.exports = {
   logout,
   refreshToken,
   oauthExchange,
+  sendOauthOtp,
+  completeOauth,
   verifyEmail,
   resendVerificationEmail,
   sendForgotPasswordOtp,
