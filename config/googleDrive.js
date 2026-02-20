@@ -32,9 +32,10 @@ function getDriveClient() {
  * @param {Buffer} fileBuffer - The file buffer to upload
  * @param {string} fileName - Name for the file in Drive
  * @param {string} [folderId] - Drive folder ID (defaults to RESUME_FOLDER_ID)
+ * @param {string} [mimeType] - File mime type
  * @returns {Promise<{fileId: string, webViewLink: string}>}
  */
-async function uploadToDrive(fileBuffer, fileName, folderId) {
+async function uploadToDrive(fileBuffer, fileName, folderId, mimeType = 'application/pdf') {
   const drive = getDriveClient();
 
   const bufferStream = new Readable();
@@ -47,7 +48,7 @@ async function uploadToDrive(fileBuffer, fileName, folderId) {
       parents: [folderId || RESUME_FOLDER_ID],
     },
     media: {
-      mimeType: 'application/pdf',
+      mimeType,
       body: bufferStream,
     },
     fields: 'id, webViewLink, size',

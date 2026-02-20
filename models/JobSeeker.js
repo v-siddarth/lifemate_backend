@@ -121,6 +121,11 @@ const jobSeekerSchema = new mongoose.Schema({
       trim: true,
       maxlength: [100, 'Doctor sub-specialty cannot exceed 100 characters'],
     },
+    doctorSubSpecialties: [{
+      type: String,
+      trim: true,
+      maxlength: [100, 'Doctor sub-specialty cannot exceed 100 characters'],
+    }],
     otherDoctorSubSpecialty: {
       type: String,
       trim: true,
@@ -248,6 +253,10 @@ const jobSeekerSchema = new mongoose.Schema({
         'DNB',
         'DM',
         'MCh',
+        'BAMS',
+        'BHMS',
+        'BUMS',
+        'Unani',
         'BDS',
         'MDS',
         'BPT',
@@ -298,6 +307,11 @@ const jobSeekerSchema = new mongoose.Schema({
       min: [1950, 'Year cannot be before 1950'],
       max: [new Date().getFullYear() + 5, 'Year cannot be more than 5 years in future'],
     },
+    startYear: {
+      type: Number,
+      min: [1950, 'Start year cannot be before 1950'],
+      max: [new Date().getFullYear() + 5, 'Start year cannot be more than 5 years in future'],
+    },
     grade: {
       type: String,
       trim: true,
@@ -315,9 +329,19 @@ const jobSeekerSchema = new mongoose.Schema({
     },
     company: {
       type: String,
-      required: true,
       trim: true,
       maxlength: [100, 'Company name cannot exceed 100 characters'],
+      required: function() {
+        return !this.organization;
+      },
+    },
+    organization: {
+      type: String,
+      trim: true,
+      maxlength: [100, 'Organization name cannot exceed 100 characters'],
+      required: function() {
+        return !this.company;
+      },
     },
     location: {
       type: String,
@@ -457,6 +481,11 @@ const jobSeekerSchema = new mongoose.Schema({
         enum: ['Hourly', 'Daily', 'Monthly', 'Annual'],
       },
     },
+    expectedBenefits: [{
+      type: String,
+      trim: true,
+      maxlength: [100, 'Expected benefit cannot exceed 100 characters'],
+    }],
     availability: {
       type: String,
       enum: ['Immediately', '2 weeks', '1 month', '2 months', '3 months', 'Negotiable'],
@@ -479,6 +508,8 @@ const jobSeekerSchema = new mongoose.Schema({
     filename: String,
     uploadedAt: Date,
     publicId: String,
+    driveFileId: String,
+    storageType: String,
     bytes: Number,
   },
   coverLetter: {
@@ -486,6 +517,8 @@ const jobSeekerSchema = new mongoose.Schema({
     filename: String,
     uploadedAt: Date,
     publicId: String,
+    driveFileId: String,
+    storageType: String,
     bytes: Number,
   },
   portfolio: [{
@@ -659,6 +692,28 @@ jobSeekerSchema.methods.calculateProfileCompletion = function() {
  * Update profile completion before saving
  */
 jobSeekerSchema.pre('save', function(next) {
+  if (this.professionalInfo) {
+    const subSpecs = this.professionalInfo.doctorSubSpecialties;
+    if (Array.isArray(subSpecs) && subSpecs.length > 0) {
+      this.professionalInfo.doctorSubSpecialty = subSpecs[0];
+    } else if (this.professionalInfo.doctorSubSpecialty) {
+      this.professionalInfo.doctorSubSpecialties = [this.professionalInfo.doctorSubSpecialty];
+    }
+  }
+
+  if (Array.isArray(this.workExperience)) {
+    this.workExperience = this.workExperience.map((item) => {
+      if (!item) return item;
+      if (item.organization && !item.company) {
+        item.company = item.organization;
+      }
+      if (item.company && !item.organization) {
+        item.organization = item.company;
+      }
+      return item;
+    });
+  }
+
   this.calculateProfileCompletion();
   next();
 });

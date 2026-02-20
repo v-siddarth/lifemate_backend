@@ -2,11 +2,23 @@ const JobSeeker = require('../models/JobSeeker');
 const { uploadToCloudinary, deleteFromCloudinary } = require('../config/cloudinary');
 const { uploadToDrive, deleteFromDrive, RESUME_FOLDER_ID } = require('../config/googleDrive');
 const { successResponse, errorResponse, notFoundResponse, validationErrorResponse } = require('../utils/response');
+const PHONE_REGEX = /^[\+]?[1-9][\d]{0,15}$/;
 
 // helper to find JS profile
 async function getJobSeekerByUser(userId) {
   const js = await JobSeeker.findOne({ user: userId });
   return js;
+}
+
+function splitFullName(fullName) {
+  const value = String(fullName || '').trim().replace(/\s+/g, ' ');
+  if (!value) return { firstName: '', lastName: '' };
+  const parts = value.split(' ');
+  if (parts.length === 1) return { firstName: parts[0], lastName: 'User' };
+  return {
+    firstName: parts.slice(0, -1).join(' '),
+    lastName: parts[parts.length - 1],
+  };
 }
 
 // GET /api/jobseeker/profile
@@ -96,8 +108,75 @@ exports.updateMyProfile = async (req, res) => {
           delete value.primaryEmail;
           delete value.primaryPhone;
         }
+        if (key === 'education' && Array.isArray(value)) {
+          value = value.map((item) => {
+            if (!item || typeof item !== 'object') return item;
+            return {
+              ...item,
+              yearOfCompletion: item.yearOfCompletion ? Number(item.yearOfCompletion) : item.yearOfCompletion,
+              startYear: item.startYear ? Number(item.startYear) : item.startYear,
+            };
+          });
+        }
+        if (key === 'workExperience' && Array.isArray(value)) {
+          value = value.map((item) => {
+            if (!item || typeof item !== 'object') return item;
+            const organization = item.organization || item.company;
+            return {
+              ...item,
+              organization,
+              company: organization,
+            };
+          });
+        }
+        if (key === 'professionalInfo' && value && typeof value === 'object') {
+          const doctorSubSpecialties = Array.isArray(value.doctorSubSpecialties)
+            ? value.doctorSubSpecialties
+            : value.doctorSubSpecialty
+              ? [value.doctorSubSpecialty]
+              : [];
+          value = {
+            ...value,
+            doctorSubSpecialties,
+            doctorSubSpecialty: doctorSubSpecialties[0] || value.doctorSubSpecialty || '',
+          };
+        }
+        if (key === 'jobPreferences' && value && typeof value === 'object') {
+          const preferredLocations = Array.isArray(value.preferredLocations) ? value.preferredLocations : [];
+          value = {
+            ...value,
+            preferredLocations: preferredLocations
+              .map((location) => ({
+                city: String(location?.city || '').trim(),
+                state: String(location?.state || 'Maharashtra').trim(),
+                country: String(location?.country || 'India').trim(),
+              }))
+              .filter((location) => Boolean(location.city)),
+          };
+        }
         js.set(key, value);
       }
+    }
+
+    const userPayload = (payload.user && typeof payload.user === 'object') ? payload.user : {};
+    const incomingFullName = payload.fullName || userPayload.fullName;
+    if (incomingFullName) {
+      const parsed = splitFullName(incomingFullName);
+      if (parsed.firstName) req.user.firstName = parsed.firstName;
+      if (parsed.lastName) req.user.lastName = parsed.lastName;
+    }
+    if (typeof userPayload.firstName === 'string' && userPayload.firstName.trim()) {
+      req.user.firstName = userPayload.firstName.trim();
+    }
+    if (typeof userPayload.lastName === 'string' && userPayload.lastName.trim()) {
+      req.user.lastName = userPayload.lastName.trim();
+    }
+    if (typeof userPayload.phone === 'string') {
+      const phone = userPayload.phone.trim();
+      if (phone && !PHONE_REGEX.test(phone)) {
+        return errorResponse(res, 400, 'Please enter a valid phone number');
+      }
+      req.user.phone = phone || undefined;
     }
 
     // Keep old fields in sync for existing screens
@@ -107,28 +186,42 @@ exports.updateMyProfile = async (req, res) => {
           ? payload.professionalInfo.otherCategory || 'Other'
           : payload.professionalInfo.category;
     }
-    if (Array.isArray(payload.professionalInfo?.specifications)) {
-      const synced = [...payload.professionalInfo.specifications];
-      if (payload.professionalInfo?.doctorSubSpecialty) {
-        const doctorField =
-          payload.professionalInfo.doctorSubSpecialty === 'Other'
-            ? payload.professionalInfo.otherDoctorSubSpecialty || 'Other'
-            : payload.professionalInfo.doctorSubSpecialty;
-        synced.push(doctorField);
-      }
-      js.specializations = synced;
+    if (payload.professionalInfo) {
+      const sourceInfo = js.professionalInfo || {};
+      const specs = Array.isArray(sourceInfo.specifications) ? sourceInfo.specifications : [];
+      const fields = Array.isArray(sourceInfo.doctorSubSpecialties)
+        ? sourceInfo.doctorSubSpecialties
+        : (sourceInfo.doctorSubSpecialty ? [sourceInfo.doctorSubSpecialty] : []);
+      js.specializations = [...new Set([...specs, ...fields].filter(Boolean))];
     }
 
     // Optional file uploads (multipart/form-data)
     if (req.files?.profilePhoto?.[0]) {
       const image = req.files.profilePhoto[0];
-      const up = await uploadToCloudinary(
+      if (!/^image\//.test(image.mimetype)) {
+        return errorResponse(res, 400, 'Only image files are allowed for profile photo');
+      }
+
+      if (req.user.profileImageDriveFileId) {
+        try {
+          await deleteFromDrive(req.user.profileImageDriveFileId);
+        } catch (error) {
+          console.error('Failed to delete old profile photo from Drive:', error.message);
+        }
+      }
+
+      const imageExt = image.originalname.includes('.')
+        ? image.originalname.slice(image.originalname.lastIndexOf('.'))
+        : '.jpg';
+      const driveResult = await uploadToDrive(
         image.buffer,
-        `lifemate/jobseekers/${js._id}/profile`,
-        'image'
+        `profile_photo_${js._id}_${Date.now()}${imageExt}`,
+        RESUME_FOLDER_ID,
+        image.mimetype
       );
-      req.user.profileImage = up.secure_url;
-      await req.user.save();
+
+      req.user.profileImage = driveResult.webViewLink;
+      req.user.profileImageDriveFileId = driveResult.fileId;
     }
 
     if (req.files?.panCardImage?.[0]) {
@@ -204,6 +297,7 @@ exports.updateMyProfile = async (req, res) => {
     }
 
     await js.save();
+    await req.user.save();
     const updated = await JobSeeker.findById(js._id).populate({
       path: 'user',
       select: 'firstName lastName email phone profileImage role',

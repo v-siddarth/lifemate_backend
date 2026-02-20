@@ -499,7 +499,7 @@ const sendOauthOtp = async (req, res) => {
 
 const completeOauth = async (req, res) => {
   try {
-    const { pendingCode, otp, role } = req.body || {};
+    const { pendingCode, otp, role, phone } = req.body || {};
     if (!pendingCode) {
       return errorResponse(res, 400, 'OAuth pending code is required.');
     }
@@ -514,6 +514,10 @@ const completeOauth = async (req, res) => {
     const requestedRole = String(role || pending.requestedRole || '').toLowerCase();
     const selectedRole = ['jobseeker', 'employer'].includes(requestedRole) ? requestedRole : null;
     const normalizedEmail = String(pending.email || '').trim().toLowerCase();
+    const normalizedPhone = typeof phone === 'string' ? phone.trim() : '';
+    if (normalizedPhone && !/^[\+]?[1-9][\d]{0,15}$/.test(normalizedPhone)) {
+      return errorResponse(res, 400, 'Please enter a valid phone number');
+    }
 
     const otpResult = await verifyOtpRecord({ email: normalizedEmail, purpose: 'oauth_login', otp });
     if (!otpResult.success) {
@@ -551,6 +555,11 @@ const completeOauth = async (req, res) => {
         await user.save();
       }
 
+      if (normalizedPhone && user.phone !== normalizedPhone) {
+        user.phone = normalizedPhone;
+        await user.save();
+      }
+
       if (user.role === 'jobseeker') {
         const existingJobseeker = await JobSeeker.findOne({ user: user._id }).select('_id').lean();
         if (!existingJobseeker) {
@@ -571,6 +580,7 @@ const completeOauth = async (req, res) => {
         oauthProvider: 'google',
         oauthId: pending.googleId,
         profileImage: pending.profileImage || null,
+        phone: normalizedPhone || undefined,
       });
 
       if (selectedRole === 'jobseeker') {

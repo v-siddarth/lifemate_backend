@@ -54,6 +54,10 @@ const userSchema = new mongoose.Schema({
     type: String, // Cloudinary URL
     default: null,
   },
+  profileImageDriveFileId: {
+    type: String,
+    default: null,
+  },
   
   // Account Status
   isEmailVerified: {
