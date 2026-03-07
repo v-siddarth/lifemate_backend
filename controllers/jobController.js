@@ -162,6 +162,20 @@ exports.create = async (req, res) => {
   try {
     const employer = await Employer.findOne({ user: req.user._id });
     if (!employer) return errorResponse(res, 403, 'Employer profile not found');
+    const hasCompleteAddress = Boolean(
+      employer?.address?.street?.trim() &&
+      employer?.address?.city?.trim() &&
+      employer?.address?.state?.trim() &&
+      employer?.address?.pincode?.trim()
+    );
+    if (!hasCompleteAddress) {
+      return validationErrorResponse(res, [
+        {
+          field: 'address',
+          message: 'Complete employer profile address is required before posting jobs.',
+        },
+      ]);
+    }
 
     const payload = { ...req.body };
     payload.employer = employer._id;

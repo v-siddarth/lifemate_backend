@@ -5,7 +5,6 @@ const { uploadToDrive, RESUME_FOLDER_ID } = require('../config/googleDrive');
 const MANDATORY_CERTIFICATE_NAMES = [
   'Bombay Nursing Certificate',
   'Hospital Registration Certificate',
-  'NABH Entry Level Certificate',
 ];
 
 const ALLOWED_CERTIFICATE_MIME_TYPES = new Set([
@@ -139,20 +138,22 @@ exports.createOrUpdateProfile = async (req, res) => {
 
       body.employerCertificates = body.employerCertificates
         .filter((item) => item && typeof item === 'object')
-        .map((item) => ({
-          ...item,
-          name: String(item.name || '').trim(),
-          customName: String(item.customName || '').trim(),
-          category: item.category === 'Mandatory' ? 'Mandatory' : 'Optional',
-          issuingBody: String(item.issuingBody || '').trim(),
-          documentUrl: String(
-            uploadedByKey[String(item.uploadKey || '').trim()]?.url || item.documentUrl || ''
-          ).trim(),
-          driveFileId: String(
-            uploadedByKey[String(item.uploadKey || '').trim()]?.driveFileId || item.driveFileId || ''
-          ).trim(),
-          notes: String(item.notes || '').trim(),
-        }))
+        .map((item) => {
+          const name = String(item.name || '').trim();
+          const uploadKey = String(item.uploadKey || '').trim();
+          return {
+            ...item,
+            name,
+            customName: String(item.customName || '').trim(),
+            category: MANDATORY_CERTIFICATE_NAMES.includes(name) ? 'Mandatory' : 'Optional',
+            issuingBody: String(item.issuingBody || '').trim(),
+            documentUrl: String(uploadedByKey[uploadKey]?.url || item.documentUrl || '').trim(),
+            driveFileId: String(
+              uploadedByKey[uploadKey]?.driveFileId || item.driveFileId || ''
+            ).trim(),
+            notes: String(item.notes || '').trim(),
+          };
+        })
         .filter((item) => item.name);
 
       const invalidOther = body.employerCertificates.find(
