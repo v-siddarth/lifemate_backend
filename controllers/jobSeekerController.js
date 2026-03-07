@@ -3,11 +3,33 @@ const { uploadToCloudinary, deleteFromCloudinary } = require('../config/cloudina
 const { uploadToDrive, deleteFromDrive, RESUME_FOLDER_ID } = require('../config/googleDrive');
 const { successResponse, errorResponse, notFoundResponse, validationErrorResponse } = require('../utils/response');
 const PHONE_REGEX = /^[\+]?[1-9][\d]{0,15}$/;
+const ALLOWED_PROFILE_DOCUMENT_MIME_TYPES = new Set([
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+]);
 
 // helper to find JS profile
 async function getJobSeekerByUser(userId) {
   const js = await JobSeeker.findOne({ user: userId });
   return js;
+}
+
+function isAllowedProfileDocument(file) {
+  return Boolean(file?.mimetype && ALLOWED_PROFILE_DOCUMENT_MIME_TYPES.has(file.mimetype));
+}
+
+function findEducationEntry(js, educationId) {
+  const educationList = Array.isArray(js?.education) ? js.education : [];
+  return educationList.find((item) => String(item?._id) === String(educationId));
+}
+
+function findWorkExperienceEntry(js, experienceId) {
+  const experienceList = Array.isArray(js?.workExperience) ? js.workExperience : [];
+  return experienceList.find((item) => String(item?._id) === String(experienceId));
 }
 
 function splitFullName(fullName) {
@@ -25,7 +47,7 @@ function splitFullName(fullName) {
 exports.getMyProfile = async (req, res) => {
   try {
     const js = await JobSeeker.findOne({ user: req.user._id })
-      .populate({ path: 'user', select: 'firstName lastName email phone profileImage role' });
+      .populate({ path: 'user', select: 'firstName lastName email phone profileImage profileImageDriveFileId role' });
     if (!js) return notFoundResponse(res, 'Job seeker profile not found');
     return successResponse(res, 200, 'Job seeker profile fetched', { jobSeeker: js });
   } catch (err) {
@@ -111,8 +133,12 @@ exports.updateMyProfile = async (req, res) => {
         if (key === 'education' && Array.isArray(value)) {
           value = value.map((item) => {
             if (!item || typeof item !== 'object') return item;
+            const normalizedDegree = item.degree === 'MRCP' ? 'MRCS' : item.degree;
+            const normalizedField = item.field === 'MRCP' ? 'MRCS' : item.field;
             return {
               ...item,
+              degree: normalizedDegree,
+              field: normalizedField,
               yearOfCompletion: item.yearOfCompletion ? Number(item.yearOfCompletion) : item.yearOfCompletion,
               startYear: item.startYear ? Number(item.startYear) : item.startYear,
             };
@@ -247,7 +273,7 @@ exports.updateMyProfile = async (req, res) => {
         image.mimetype
       );
 
-      req.user.profileImage = driveResult.webViewLink;
+      req.user.profileImage = driveResult.directLink || driveResult.webContentLink || driveResult.webViewLink;
       req.user.profileImageDriveFileId = driveResult.fileId;
     }
 
@@ -327,7 +353,7 @@ exports.updateMyProfile = async (req, res) => {
     await req.user.save();
     const updated = await JobSeeker.findById(js._id).populate({
       path: 'user',
-      select: 'firstName lastName email phone profileImage role',
+      select: 'firstName lastName email phone profileImage profileImageDriveFileId role',
     });
     return successResponse(res, 200, 'Job seeker profile updated', { jobSeeker: updated });
   } catch (err) {
@@ -472,6 +498,238 @@ exports.deleteCoverLetter = async (req, res) => {
   } catch (err) {
     console.error('Delete cover letter error:', err);
     return errorResponse(res, 500, 'Failed to delete cover letter');
+  }
+};
+
+// POST /api/jobseeker/professional-document/council-registration-certificate
+exports.uploadCouncilRegistrationCertificate = async (req, res) => {
+  try {
+    const js = await getJobSeekerByUser(req.user._id);
+    if (!js) return notFoundResponse(res, 'Job seeker profile not found');
+    if (!req.file) return errorResponse(res, 400, 'No council registration certificate file uploaded');
+    if (!isAllowedProfileDocument(req.file)) {
+      return errorResponse(res, 400, 'Only PDF, DOC, DOCX, JPG, PNG and WEBP files are allowed');
+    }
+
+    const existing = js.professionalInfo?.councilRegistrationCertificate;
+    if (existing?.driveFileId) {
+      try {
+        await deleteFromDrive(existing.driveFileId);
+      } catch (error) {
+        console.error('Failed to delete old council registration certificate from Drive:', error.message);
+      }
+    }
+
+    const extension = req.file.originalname.includes('.')
+      ? req.file.originalname.slice(req.file.originalname.lastIndexOf('.'))
+      : '';
+    const driveResult = await uploadToDrive(
+      req.file.buffer,
+      `council_registration_certificate_${js._id}_${Date.now()}${extension}`,
+      RESUME_FOLDER_ID,
+      req.file.mimetype
+    );
+
+    js.set('professionalInfo.councilRegistrationCertificate', {
+      url: driveResult.webViewLink,
+      filename: req.file.originalname,
+      uploadedAt: new Date(),
+      driveFileId: driveResult.fileId,
+      bytes: driveResult.size,
+      storageType: 'google_drive',
+    });
+
+    await js.save();
+
+    return successResponse(res, 200, 'Council registration certificate uploaded', {
+      councilRegistrationCertificate: js.professionalInfo?.councilRegistrationCertificate,
+    });
+  } catch (err) {
+    console.error('Upload council registration certificate error:', err);
+    return errorResponse(res, 500, 'Failed to upload council registration certificate');
+  }
+};
+
+// DELETE /api/jobseeker/professional-document/council-registration-certificate
+exports.deleteCouncilRegistrationCertificate = async (req, res) => {
+  try {
+    const js = await getJobSeekerByUser(req.user._id);
+    if (!js) return notFoundResponse(res, 'Job seeker profile not found');
+
+    const existing = js.professionalInfo?.councilRegistrationCertificate;
+    if (existing?.driveFileId) {
+      try {
+        await deleteFromDrive(existing.driveFileId);
+      } catch (error) {
+        console.error('Failed to delete council registration certificate from Drive:', error.message);
+      }
+    }
+
+    js.set('professionalInfo.councilRegistrationCertificate', undefined);
+    await js.save();
+
+    return successResponse(res, 200, 'Council registration certificate deleted');
+  } catch (err) {
+    console.error('Delete council registration certificate error:', err);
+    return errorResponse(res, 500, 'Failed to delete council registration certificate');
+  }
+};
+
+// POST /api/jobseeker/education/:educationId/certificate
+exports.uploadEducationCertificate = async (req, res) => {
+  try {
+    const js = await getJobSeekerByUser(req.user._id);
+    if (!js) return notFoundResponse(res, 'Job seeker profile not found');
+    if (!req.file) return errorResponse(res, 400, 'No education certificate file uploaded');
+    if (!isAllowedProfileDocument(req.file)) {
+      return errorResponse(res, 400, 'Only PDF, DOC, DOCX, JPG, PNG and WEBP files are allowed');
+    }
+
+    const education = findEducationEntry(js, req.params.educationId);
+    if (!education) return notFoundResponse(res, 'Education entry not found');
+
+    if (education.educationCertificate?.driveFileId) {
+      try {
+        await deleteFromDrive(education.educationCertificate.driveFileId);
+      } catch (error) {
+        console.error('Failed to delete old education certificate from Drive:', error.message);
+      }
+    }
+
+    const extension = req.file.originalname.includes('.')
+      ? req.file.originalname.slice(req.file.originalname.lastIndexOf('.'))
+      : '';
+    const driveResult = await uploadToDrive(
+      req.file.buffer,
+      `education_certificate_${js._id}_${education._id}_${Date.now()}${extension}`,
+      RESUME_FOLDER_ID,
+      req.file.mimetype
+    );
+
+    education.educationCertificate = {
+      url: driveResult.webViewLink,
+      filename: req.file.originalname,
+      uploadedAt: new Date(),
+      driveFileId: driveResult.fileId,
+      bytes: driveResult.size,
+      storageType: 'google_drive',
+    };
+
+    await js.save();
+
+    return successResponse(res, 200, 'Education certificate uploaded', {
+      educationId: String(education._id),
+      educationCertificate: education.educationCertificate,
+    });
+  } catch (err) {
+    console.error('Upload education certificate error:', err);
+    return errorResponse(res, 500, 'Failed to upload education certificate');
+  }
+};
+
+// DELETE /api/jobseeker/education/:educationId/certificate
+exports.deleteEducationCertificate = async (req, res) => {
+  try {
+    const js = await getJobSeekerByUser(req.user._id);
+    if (!js) return notFoundResponse(res, 'Job seeker profile not found');
+
+    const education = findEducationEntry(js, req.params.educationId);
+    if (!education) return notFoundResponse(res, 'Education entry not found');
+
+    if (education.educationCertificate?.driveFileId) {
+      try {
+        await deleteFromDrive(education.educationCertificate.driveFileId);
+      } catch (error) {
+        console.error('Failed to delete education certificate from Drive:', error.message);
+      }
+    }
+
+    education.educationCertificate = undefined;
+    await js.save();
+
+    return successResponse(res, 200, 'Education certificate deleted', { educationId: String(education._id) });
+  } catch (err) {
+    console.error('Delete education certificate error:', err);
+    return errorResponse(res, 500, 'Failed to delete education certificate');
+  }
+};
+
+// POST /api/jobseeker/work-experience/:experienceId/document
+exports.uploadWorkExperienceDocument = async (req, res) => {
+  try {
+    const js = await getJobSeekerByUser(req.user._id);
+    if (!js) return notFoundResponse(res, 'Job seeker profile not found');
+    if (!req.file) return errorResponse(res, 400, 'No work experience document file uploaded');
+    if (!isAllowedProfileDocument(req.file)) {
+      return errorResponse(res, 400, 'Only PDF, DOC, DOCX, JPG, PNG and WEBP files are allowed');
+    }
+
+    const workExperience = findWorkExperienceEntry(js, req.params.experienceId);
+    if (!workExperience) return notFoundResponse(res, 'Work experience entry not found');
+
+    if (workExperience.experienceDocument?.driveFileId) {
+      try {
+        await deleteFromDrive(workExperience.experienceDocument.driveFileId);
+      } catch (error) {
+        console.error('Failed to delete old work experience document from Drive:', error.message);
+      }
+    }
+
+    const extension = req.file.originalname.includes('.')
+      ? req.file.originalname.slice(req.file.originalname.lastIndexOf('.'))
+      : '';
+    const driveResult = await uploadToDrive(
+      req.file.buffer,
+      `work_experience_document_${js._id}_${workExperience._id}_${Date.now()}${extension}`,
+      RESUME_FOLDER_ID,
+      req.file.mimetype
+    );
+
+    workExperience.experienceDocument = {
+      url: driveResult.webViewLink,
+      filename: req.file.originalname,
+      uploadedAt: new Date(),
+      driveFileId: driveResult.fileId,
+      bytes: driveResult.size,
+      storageType: 'google_drive',
+    };
+
+    await js.save();
+
+    return successResponse(res, 200, 'Work experience document uploaded', {
+      experienceId: String(workExperience._id),
+      experienceDocument: workExperience.experienceDocument,
+    });
+  } catch (err) {
+    console.error('Upload work experience document error:', err);
+    return errorResponse(res, 500, 'Failed to upload work experience document');
+  }
+};
+
+// DELETE /api/jobseeker/work-experience/:experienceId/document
+exports.deleteWorkExperienceDocument = async (req, res) => {
+  try {
+    const js = await getJobSeekerByUser(req.user._id);
+    if (!js) return notFoundResponse(res, 'Job seeker profile not found');
+
+    const workExperience = findWorkExperienceEntry(js, req.params.experienceId);
+    if (!workExperience) return notFoundResponse(res, 'Work experience entry not found');
+
+    if (workExperience.experienceDocument?.driveFileId) {
+      try {
+        await deleteFromDrive(workExperience.experienceDocument.driveFileId);
+      } catch (error) {
+        console.error('Failed to delete work experience document from Drive:', error.message);
+      }
+    }
+
+    workExperience.experienceDocument = undefined;
+    await js.save();
+
+    return successResponse(res, 200, 'Work experience document deleted', { experienceId: String(workExperience._id) });
+  } catch (err) {
+    console.error('Delete work experience document error:', err);
+    return errorResponse(res, 500, 'Failed to delete work experience document');
   }
 };
 

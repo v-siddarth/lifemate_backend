@@ -25,6 +25,48 @@ router.delete('/resume', authenticate, requireJobSeeker, jobSeekerController.del
 router.post('/cover-letter', authenticate, requireJobSeeker, uploadDocument.single('coverLetter'), jobSeekerController.uploadCoverLetter);
 router.delete('/cover-letter', authenticate, requireJobSeeker, jobSeekerController.deleteCoverLetter);
 
+router.post(
+  '/professional-document/council-registration-certificate',
+  authenticate,
+  requireJobSeeker,
+  uploadAny.single('councilRegistrationCertificate'),
+  jobSeekerController.uploadCouncilRegistrationCertificate
+);
+router.delete(
+  '/professional-document/council-registration-certificate',
+  authenticate,
+  requireJobSeeker,
+  jobSeekerController.deleteCouncilRegistrationCertificate
+);
+
+router.post(
+  '/education/:educationId/certificate',
+  authenticate,
+  requireJobSeeker,
+  uploadAny.single('educationCertificate'),
+  jobSeekerController.uploadEducationCertificate
+);
+router.delete(
+  '/education/:educationId/certificate',
+  authenticate,
+  requireJobSeeker,
+  jobSeekerController.deleteEducationCertificate
+);
+
+router.post(
+  '/work-experience/:experienceId/document',
+  authenticate,
+  requireJobSeeker,
+  uploadAny.single('experienceDocument'),
+  jobSeekerController.uploadWorkExperienceDocument
+);
+router.delete(
+  '/work-experience/:experienceId/document',
+  authenticate,
+  requireJobSeeker,
+  jobSeekerController.deleteWorkExperienceDocument
+);
+
 // Projects management
 router.post('/projects', authenticate, requireJobSeeker, jobSeekerController.addProject);
 router.put('/projects/:projectId', authenticate, requireJobSeeker, jobSeekerController.updateProject);

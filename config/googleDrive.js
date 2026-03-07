@@ -33,7 +33,7 @@ function getDriveClient() {
  * @param {string} fileName - Name for the file in Drive
  * @param {string} [folderId] - Drive folder ID (defaults to RESUME_FOLDER_ID)
  * @param {string} [mimeType] - File mime type
- * @returns {Promise<{fileId: string, webViewLink: string}>}
+ * @returns {Promise<{fileId: string, webViewLink: string, webContentLink: string, directLink: string}>}
  */
 async function uploadToDrive(fileBuffer, fileName, folderId, mimeType = 'application/pdf') {
   const drive = getDriveClient();
@@ -51,13 +51,34 @@ async function uploadToDrive(fileBuffer, fileName, folderId, mimeType = 'applica
       mimeType,
       body: bufferStream,
     },
-    fields: 'id, webViewLink, size',
+    fields: 'id, size',
+  });
+
+  const fileId = driveFile.data.id;
+
+  try {
+    await drive.permissions.create({
+      fileId,
+      requestBody: {
+        role: 'reader',
+        type: 'anyone',
+      },
+    });
+  } catch (error) {
+    console.error('Failed to set public permission on Drive file:', error.message);
+  }
+
+  const metadata = await drive.files.get({
+    fileId,
+    fields: 'id, webViewLink, webContentLink, size',
   });
 
   return {
-    fileId: driveFile.data.id,
-    webViewLink: driveFile.data.webViewLink,
-    size: driveFile.data.size ? Number(driveFile.data.size) : 0,
+    fileId,
+    webViewLink: metadata.data.webViewLink || `https://drive.google.com/file/d/${fileId}/view`,
+    webContentLink: metadata.data.webContentLink || '',
+    directLink: `https://drive.google.com/uc?export=view&id=${fileId}`,
+    size: metadata.data.size ? Number(metadata.data.size) : 0,
   };
 }
 

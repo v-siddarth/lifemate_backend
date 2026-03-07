@@ -149,6 +149,14 @@ const jobSeekerSchema = new mongoose.Schema({
         message: 'Registration expiry date must be after registration date',
       },
     },
+    councilRegistrationCertificate: {
+      url: String,
+      filename: String,
+      uploadedAt: Date,
+      driveFileId: String,
+      storageType: String,
+      bytes: Number,
+    },
     location: {
       country: {
         type: String,
@@ -274,7 +282,7 @@ const jobSeekerSchema = new mongoose.Schema({
         'MDS',
         'Fellowship',
         'FRCS',
-        'MRCP',
+        'MRCS',
         'BPT',
         'MPT',
         'ANM',
@@ -332,6 +340,14 @@ const jobSeekerSchema = new mongoose.Schema({
       type: String,
       trim: true,
       maxlength: [20, 'Grade cannot exceed 20 characters'],
+    },
+    educationCertificate: {
+      url: String,
+      filename: String,
+      uploadedAt: Date,
+      driveFileId: String,
+      storageType: String,
+      bytes: Number,
     },
   }],
   
@@ -392,6 +408,14 @@ const jobSeekerSchema = new mongoose.Schema({
       trim: true,
       maxlength: [200, 'Achievement cannot exceed 200 characters'],
     }],
+    experienceDocument: {
+      url: String,
+      filename: String,
+      uploadedAt: Date,
+      driveFileId: String,
+      storageType: String,
+      bytes: Number,
+    },
   }],
   
   // Skills and Certifications
@@ -703,6 +727,22 @@ jobSeekerSchema.methods.calculateProfileCompletion = function() {
   this.profileCompletion = completion;
   return completion;
 };
+
+jobSeekerSchema.pre('validate', function(next) {
+  if (Array.isArray(this.education)) {
+    this.education = this.education.map((item) => {
+      if (!item) return item;
+      if (item.degree === 'MRCP') {
+        item.degree = 'MRCS';
+      }
+      if (item.field === 'MRCP') {
+        item.field = 'MRCS';
+      }
+      return item;
+    });
+  }
+  next();
+});
 
 /**
  * Update profile completion before saving
