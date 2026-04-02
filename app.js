@@ -5,7 +5,6 @@ const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
 const morgan = require('morgan');
 require('dotenv').config();
-
 const connectDB = require('./config/database');
 const authRoutes = require('./routes/auth');
 const oauthRoutes = require('./routes/oauth');
@@ -18,6 +17,7 @@ const jobSeekerRoutes = require('./routes/jobseeker');
 const resumeRoutes = require('./routes/resume');
 const adminRoutes = require('./routes/admin');
 const pricingRoutes = require('./routes/pricing');
+const pricingController = require('./controllers/pricingController');
 const newsletterRoutes = require('./routes/newsletter');
 const passport = require('./config/passport');
 const { errorResponse } = require('./utils/response');
@@ -30,6 +30,8 @@ if (process.env.NODE_ENV !== 'test') {
 
 app.use(helmet());
 
+/* ===================== CORS FIX START ===================== */
+
 const allowedOrigins = (process.env.CORS_ORIGINS || '')
   .split(',')
   .map((origin) => origin.trim())
@@ -37,23 +39,43 @@ const allowedOrigins = (process.env.CORS_ORIGINS || '')
 
 const fallbackOrigins = [
   'https://career-made-frontend.vercel.app',
+  'https://careermed.in',
+  'https://www.careermed.in',
   'http://localhost:3000',
 ];
 
-const corsAllowlist = allowedOrigins.length > 0 ? allowedOrigins : fallbackOrigins;
+// allow vercel preview domains dynamically
+const isVercelPreview = (origin) =>
+  origin && origin.includes('.vercel.app');
+
+const corsAllowlist =
+  allowedOrigins.length > 0 ? allowedOrigins : fallbackOrigins;
 
 app.use(
   cors({
     origin(origin, callback) {
-      if (!origin || corsAllowlist.includes(origin)) {
-        callback(null, true);
-      } else {
-        callback(new Error(`Not allowed by CORS: ${origin}`));
+      if (!origin) return callback(null, true);
+
+      if (
+        corsAllowlist.includes(origin) ||
+        isVercelPreview(origin)
+      ) {
+        return callback(null, true);
       }
+
+      console.log('Blocked by CORS:', origin);
+      return callback(new Error(`Not allowed by CORS: ${origin}`));
     },
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
   })
 );
+
+// ✅ HANDLE PREFLIGHT REQUESTS
+app.options('*', cors());
+
+/* ===================== CORS FIX END ===================== */
 
 const limiter = rateLimit({
   windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS, 10) || 15 * 60 * 1000,
@@ -70,6 +92,13 @@ app.use(limiter);
 if (process.env.NODE_ENV === 'development') {
   app.use(morgan('dev'));
 }
+
+// Razorpay webhook signature verification requires raw body.
+app.post(
+  '/api/pricing/razorpay/webhook',
+  express.raw({ type: 'application/json' }),
+  pricingController.handleRazorpayWebhook
+);
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
@@ -139,3 +168,4 @@ app.use((err, req, res, _next) => {
 });
 
 module.exports = app;
+

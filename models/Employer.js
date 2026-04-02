@@ -341,6 +341,11 @@ const employerSchema = new mongoose.Schema({
       type: Boolean,
       default: false,
     },
+    pendingPlan: {
+      type: String,
+      enum: ['Free', 'Basic', 'Premium', 'Enterprise'],
+      default: undefined,
+    },
     features: {
       maxJobPosts: {
         type: Number,
@@ -362,6 +367,45 @@ const employerSchema = new mongoose.Schema({
         type: Boolean,
         default: false,
       },
+    },
+    razorpay: {
+      provider: {
+        type: String,
+        default: 'razorpay',
+      },
+      planId: {
+        type: String,
+        trim: true,
+      },
+      subscriptionId: {
+        type: String,
+        trim: true,
+      },
+      status: {
+        type: String,
+        trim: true,
+      },
+      shortUrl: {
+        type: String,
+        trim: true,
+      },
+      currentStart: Date,
+      currentEnd: Date,
+      chargeAt: Date,
+      endAt: Date,
+      lastPaymentId: {
+        type: String,
+        trim: true,
+      },
+      lastInvoiceId: {
+        type: String,
+        trim: true,
+      },
+      lastWebhookEventId: {
+        type: String,
+        trim: true,
+      },
+      lastWebhookAt: Date,
     },
   },
   
@@ -490,6 +534,10 @@ employerSchema.index({ 'address.state': 1 });
 employerSchema.index({ 'specializations': 1 });
 employerSchema.index({ 'verification.isVerified': 1 });
 employerSchema.index({ 'subscription.plan': 1 });
+employerSchema.index(
+  { 'subscription.razorpay.subscriptionId': 1 },
+  { unique: true, sparse: true }
+);
 
 /**
  * Check if employer can post more jobs based on subscription
