@@ -30,13 +30,6 @@ if (process.env.NODE_ENV !== 'test') {
 
 app.use(helmet());
 
-/* ===================== CORS FIX START ===================== */
-
-const allowedOrigins = (process.env.CORS_ORIGINS || '')
-  .split(',')
-  .map((origin) => origin.trim())
-  .filter(Boolean);
-
 const fallbackOrigins = [
   'https://career-made-frontend.vercel.app',
   'https://careermed.in',
@@ -44,38 +37,64 @@ const fallbackOrigins = [
   'http://localhost:3000',
 ];
 
+const normalizeOrigin = (origin) => String(origin || '').trim().replace(/\/+$/, '');
+
+const expandOriginVariants = (origin) => {
+  const normalizedOrigin = normalizeOrigin(origin);
+  if (!normalizedOrigin) return [];
+
+  try {
+    const url = new URL(normalizedOrigin);
+    const variants = new Set([`${url.protocol}//${url.host}`]);
+
+    if (!url.port && (url.protocol === 'http:' || url.protocol === 'https:')) {
+      if (url.hostname.startsWith('www.')) {
+        variants.add(`${url.protocol}//${url.hostname.slice(4)}`);
+      } else {
+        variants.add(`${url.protocol}//www.${url.hostname}`);
+      }
+    }
+
+    return [...variants];
+  } catch {
+    return [normalizedOrigin];
+  }
+};
+
+const allowedOrigins = (process.env.CORS_ORIGINS || '')
+  .split(',')
+  .flatMap((origin) => expandOriginVariants(origin))
+  .filter(Boolean);
+
 // allow vercel preview domains dynamically
 const isVercelPreview = (origin) =>
   origin && origin.includes('.vercel.app');
 
-const corsAllowlist =
-  allowedOrigins.length > 0 ? allowedOrigins : fallbackOrigins;
-
-app.use(
-  cors({
-    origin(origin, callback) {
-      if (!origin) return callback(null, true);
-
-      if (
-        corsAllowlist.includes(origin) ||
-        isVercelPreview(origin)
-      ) {
-        return callback(null, true);
-      }
-
-      console.log('Blocked by CORS:', origin);
-      return callback(new Error(`Not allowed by CORS: ${origin}`));
-    },
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-  })
+const corsAllowlist = new Set(
+  [...fallbackOrigins, ...allowedOrigins].flatMap((origin) => expandOriginVariants(origin))
 );
 
-// ✅ HANDLE PREFLIGHT REQUESTS
-app.options('*', cors());
+const corsOptions = {
+  origin(origin, callback) {
+    if (!origin) return callback(null, true);
 
-/* ===================== CORS FIX END ===================== */
+    const normalizedOrigin = normalizeOrigin(origin);
+    if (corsAllowlist.has(normalizedOrigin) || isVercelPreview(normalizedOrigin)) {
+      return callback(null, true);
+    }
+
+    console.log('Blocked by CORS:', origin);
+    return callback(null, false);
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  optionsSuccessStatus: 204,
+};
+
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
+
 
 const limiter = rateLimit({
   windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS, 10) || 15 * 60 * 1000,
@@ -168,4 +187,3 @@ app.use((err, req, res, _next) => {
 });
 
 module.exports = app;
-
