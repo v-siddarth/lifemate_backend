@@ -54,6 +54,19 @@ const buildJobFilters = (q) => {
   return f;
 };
 
+const getActiveUnexpiredJobFilter = () => {
+  const now = new Date();
+
+  return {
+    status: 'Active',
+    $or: [
+      { expiresAt: { $exists: false } },
+      { expiresAt: null },
+      { expiresAt: { $gt: now } },
+    ],
+  };
+};
+
 const canAccessNonPublicJob = async (req, job) => {
   if (!req.user) return false;
   if (req.user.role === 'admin') return true;
@@ -75,8 +88,7 @@ exports.list = async (req, res) => {
 
     const isPublicAudience = !req.user || req.user.role === 'jobseeker';
     if (isPublicAudience) {
-      // Jobseekers/public must only see active jobs.
-      filters.status = 'Active';
+      Object.assign(filters, getActiveUnexpiredJobFilter());
     } else if (!req.query.includeArchived) {
       filters.status = { $ne: 'Archived' };
     }
@@ -140,6 +152,11 @@ exports.getById = async (req, res) => {
   try {
     const job = await Job.findById(req.params.id);
     if (!job) return notFoundResponse(res, 'Job not found');
+
+    const isPublicAudience = !req.user || req.user.role === 'jobseeker';
+    if (isPublicAudience && !job.isOpen()) {
+      return notFoundResponse(res, 'Job is no longer available');
+    }
 
     if (job.status !== 'Active') {
       const allowed = await canAccessNonPublicJob(req, job);
