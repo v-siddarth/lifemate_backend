@@ -21,8 +21,16 @@ const ALLOWED_CERTIFICATE_MIME_TYPES = new Set([
 // GET /api/employer/profile
 exports.getMyProfile = async (req, res) => {
   try {
-    const employer = await Employer.findOne({ user: req.user._id });
-    if (!employer) return notFoundResponse(res, 'Employer profile not found');
+    let employer = await Employer.findOne({ user: req.user._id });
+    
+    if (!employer) {
+      if (req.user.role === 'employer') {
+        employer = await Employer.create({ user: req.user._id });
+      } else {
+        return notFoundResponse(res, 'Employer profile not found');
+      }
+    }
+    
     return successResponse(res, 200, 'Employer profile fetched', { employer });
   } catch (err) {
     console.error('Get employer profile error:', err);

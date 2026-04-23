@@ -46,9 +46,19 @@ function splitFullName(fullName) {
 // GET /api/jobseeker/profile
 exports.getMyProfile = async (req, res) => {
   try {
-    const js = await JobSeeker.findOne({ user: req.user._id })
+    let js = await JobSeeker.findOne({ user: req.user._id })
       .populate({ path: 'user', select: 'firstName lastName email phone profileImage profileImageDriveFileId role' });
-    if (!js) return notFoundResponse(res, 'Job seeker profile not found');
+    
+    if (!js) {
+      if (req.user.role === 'jobseeker') {
+        await JobSeeker.create({ user: req.user._id });
+        js = await JobSeeker.findOne({ user: req.user._id })
+          .populate({ path: 'user', select: 'firstName lastName email phone profileImage profileImageDriveFileId role' });
+      } else {
+        return notFoundResponse(res, 'Job seeker profile not found');
+      }
+    }
+    
     return successResponse(res, 200, 'Job seeker profile fetched', { jobSeeker: js });
   } catch (err) {
     console.error('Get jobseeker profile error:', err);
