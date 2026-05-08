@@ -308,7 +308,7 @@ exports.apply = async (req, res) => {
         job.title,
         employer.organizationName
       ).catch(() => {});
-    } catch (_) {}
+    } catch {}
 
     const warning =
       attemptNumber === 2
@@ -390,7 +390,7 @@ exports.setRating = async (req, res) => {
           ).catch(() => {});
         }
       }
-    } catch (_) {}
+    } catch {}
     return successResponse(res, 200, "Rating updated", { application });
   } catch (err) {
     console.error("Set rating error:", err);
@@ -625,7 +625,7 @@ exports.updateStatus = async (req, res) => {
           ).catch(() => {});
         }
       }
-    } catch (_) {}
+    } catch {}
 
     return successResponse(res, 200, "Application status updated", {
       application,
@@ -705,7 +705,7 @@ exports.withdrawMine = async (req, res) => {
           "Withdrawn"
         ).catch(() => {});
       }
-    } catch (_) {}
+    } catch {}
 
     return successResponse(res, 200, "Application withdrawn successfully", {
       application,

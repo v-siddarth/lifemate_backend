@@ -1,7 +1,13 @@
 const passport = require('passport');
 const { generateOAuthPendingToken } = require('../utils/jwt');
+const {
+  buildFrontendOriginAllowlist,
+  sanitizeRedirectOrigin,
+  getCanonicalFrontendOrigin,
+} = require('../config/origins');
 
 const allowedRoles = ['jobseeker', 'employer'];
+const allowedRedirectOrigins = buildFrontendOriginAllowlist();
 
 const parseStatePayload = (rawState) => {
   if (!rawState) {
@@ -13,14 +19,7 @@ const parseStatePayload = (rawState) => {
     const parsed = JSON.parse(decoded);
     const role = String(parsed.role || '').toLowerCase();
     const safeRole = allowedRoles.includes(role) ? role : 'jobseeker';
-
-    let safeRedirectUri = null;
-    if (parsed.redirectUri) {
-      const url = new URL(String(parsed.redirectUri));
-      if (['http:', 'https:'].includes(url.protocol)) {
-        safeRedirectUri = `${url.origin}`;
-      }
-    }
+    const safeRedirectUri = sanitizeRedirectOrigin(parsed.redirectUri, allowedRedirectOrigins);
 
     return { role: safeRole, redirectUri: safeRedirectUri };
   } catch {
@@ -32,18 +31,7 @@ const parseStatePayload = (rawState) => {
 exports.startGoogle = (req, res, next) => {
   const role = (req.query.role || '').toLowerCase();
   const safeRole = allowedRoles.includes(role) ? role : 'jobseeker';
-
-  let safeRedirectUri = null;
-  if (req.query.redirectUri) {
-    try {
-      const url = new URL(String(req.query.redirectUri));
-      if (['http:', 'https:'].includes(url.protocol)) {
-        safeRedirectUri = `${url.origin}`;
-      }
-    } catch {
-      safeRedirectUri = null;
-    }
-  }
+  const safeRedirectUri = sanitizeRedirectOrigin(req.query.redirectUri, allowedRedirectOrigins);
 
   const state = Buffer.from(
     JSON.stringify({
@@ -74,7 +62,7 @@ exports.googleCallback = [
         requestedRole,
       });
 
-      const defaultFrontend = String(process.env.FRONTEND_URL || '').replace(/\/$/, '');
+      const defaultFrontend = getCanonicalFrontendOrigin();
       const successPath = redirectUri
         ? `${redirectUri}/oauth/complete`
         : (process.env.OAUTH_SUCCESS_REDIRECT || `${defaultFrontend}/oauth/complete`);
@@ -86,7 +74,8 @@ exports.googleCallback = [
       return res.redirect(redirectUrl.toString());
     } catch (error) {
       console.error('OAuth callback error:', error);
-      return res.redirect(process.env.OAUTH_FAILURE_REDIRECT || `${process.env.FRONTEND_URL}/oauth/failure`);
+      const fallbackFailureRedirect = `${getCanonicalFrontendOrigin()}/oauth/failure`;
+      return res.redirect(process.env.OAUTH_FAILURE_REDIRECT || fallbackFailureRedirect);
     }
   },
 ];

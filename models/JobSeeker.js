@@ -711,7 +711,6 @@ jobSeekerSchema.index({ 'profileCompletion': 1 });
  */
 jobSeekerSchema.methods.calculateProfileCompletion = function() {
   let completion = 0;
-  const totalFields = 10;
   
   if (this.title || this.professionalInfo?.category) completion += 10;
   if (this.bio) completion += 10;

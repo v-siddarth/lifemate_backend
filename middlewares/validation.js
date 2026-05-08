@@ -10,7 +10,7 @@ const { validationErrorResponse } = require('../utils/response');
  * @param {Function} validator - Validation function
  * @param {string} errorMessage - Error message for validation failure
  */
-const validate = (validator, errorMessage = 'Validation failed') => {
+const validate = (validator, _errorMessage = 'Validation failed') => {
   return (req, res, next) => {
     const { error } = validator(req.body);
     if (error) {

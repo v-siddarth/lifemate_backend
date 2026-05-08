@@ -472,7 +472,7 @@ exports.uploadCoverLetter = async (req, res) => {
     if (!req.file) return errorResponse(res, 400, 'No cover letter file uploaded');
 
     if (js.coverLetter && js.coverLetter.publicId) {
-      try { await deleteFromCloudinary(js.coverLetter.publicId); } catch (e) {}
+      try { await deleteFromCloudinary(js.coverLetter.publicId); } catch {}
     }
 
     const up = await uploadToCloudinary(req.file.buffer, `lifemate/jobseekers/${js._id}`, 'raw');
@@ -499,7 +499,7 @@ exports.deleteCoverLetter = async (req, res) => {
     if (!js) return notFoundResponse(res, 'Job seeker profile not found');
 
     if (js.coverLetter && js.coverLetter.publicId) {
-      try { await deleteFromCloudinary(js.coverLetter.publicId); } catch (e) {}
+      try { await deleteFromCloudinary(js.coverLetter.publicId); } catch {}
     }
     js.coverLetter = undefined;
     await js.save();

@@ -263,7 +263,7 @@ exports.createCheckoutSubscription = async (req, res) => {
       razorpayPlanId,
       amount: selectedPlan.price,
       currency: 'INR',
-      name: employer.organizationName || 'LifeMate',
+      name: employer.organizationName || 'CareerMed',
       description: `${selectedPlan.displayName} subscription`,
       prefill: {
         name: employer.contactPerson?.name || employer.organizationName || '',

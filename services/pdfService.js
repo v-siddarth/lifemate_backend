@@ -491,7 +491,7 @@ async function generateResumePDF(resumeData) {
  * @param {String} jobSeekerId - JobSeeker ID for file naming
  * @returns {Promise<Object>} - Drive upload result
  */
-async function generateAndUploadResumePDF(resumeData, jobSeekerId) {
+async function generateAndUploadResumePDF(resumeData, _jobSeekerId) {
   try {
     // Validate required data before generating
     if (!resumeData || !resumeData.personalInfo || !resumeData.personalInfo.fullName) {

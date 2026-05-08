@@ -7,6 +7,6 @@ describe('Health endpoint', () => {
 
     expect(response.status).toBe(200);
     expect(response.body.success).toBe(true);
-    expect(response.body.message).toBe('LifeMate API is running');
+    expect(response.body.message).toBe('CareerMed API is running');
   });
 });

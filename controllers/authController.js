@@ -46,8 +46,22 @@ const OTP_MAX_ATTEMPTS = 5;
 
 const createOtpCode = () => String(Math.floor(100000 + Math.random() * 900000));
 
+const resolveOtpSecret = () => {
+  const otpSecret = String(process.env.OTP_SECRET || '').trim();
+  if (otpSecret) return otpSecret;
+
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('OTP_SECRET must be configured in production.');
+  }
+
+  const jwtSecret = String(process.env.JWT_SECRET || '').trim();
+  if (jwtSecret) return jwtSecret;
+
+  throw new Error('OTP_SECRET or JWT_SECRET must be configured to hash OTP values.');
+};
+
 const hashOtp = (email, otp, purpose) => {
-  const secret = process.env.OTP_SECRET || process.env.JWT_SECRET || 'lifemate-otp-secret';
+  const secret = resolveOtpSecret();
   return crypto.createHash('sha256').update(`${email}:${purpose}:${otp}:${secret}`).digest('hex');
 };
 

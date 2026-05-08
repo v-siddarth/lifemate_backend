@@ -21,6 +21,11 @@ const pricingController = require('./controllers/pricingController');
 const newsletterRoutes = require('./routes/newsletter');
 const passport = require('./config/passport');
 const { errorResponse } = require('./utils/response');
+const {
+  buildFrontendOriginAllowlist,
+  isOriginAllowed,
+  normalizeOrigin,
+} = require('./config/origins');
 
 const app = express();
 
@@ -30,60 +35,19 @@ if (process.env.NODE_ENV !== 'test') {
 
 app.use(helmet());
 
-const fallbackOrigins = [
-  'https://career-made-frontend.vercel.app',
-  'https://careermed.in',
-  'https://www.careermed.in',
-  'http://localhost:3000',
-];
-
-const normalizeOrigin = (origin) => String(origin || '').trim().replace(/\/+$/, '');
-
-const expandOriginVariants = (origin) => {
-  const normalizedOrigin = normalizeOrigin(origin);
-  if (!normalizedOrigin) return [];
-
-  try {
-    const url = new URL(normalizedOrigin);
-    const variants = new Set([`${url.protocol}//${url.host}`]);
-
-    if (!url.port && (url.protocol === 'http:' || url.protocol === 'https:')) {
-      if (url.hostname.startsWith('www.')) {
-        variants.add(`${url.protocol}//${url.hostname.slice(4)}`);
-      } else {
-        variants.add(`${url.protocol}//www.${url.hostname}`);
-      }
-    }
-
-    return [...variants];
-  } catch {
-    return [normalizedOrigin];
-  }
-};
-
-const allowedOrigins = (process.env.CORS_ORIGINS || '')
-  .split(',')
-  .flatMap((origin) => expandOriginVariants(origin))
-  .filter(Boolean);
-
-// allow vercel preview domains dynamically
-const isVercelPreview = (origin) =>
-  origin && origin.includes('.vercel.app');
-
-const corsAllowlist = new Set(
-  [...fallbackOrigins, ...allowedOrigins].flatMap((origin) => expandOriginVariants(origin))
-);
+const corsAllowlist = buildFrontendOriginAllowlist();
 
 const corsOptions = {
   origin(origin, callback) {
     if (!origin) return callback(null, true);
 
-    const normalizedOrigin = normalizeOrigin(origin);
-    if (corsAllowlist.has(normalizedOrigin) || isVercelPreview(normalizedOrigin)) {
+    if (isOriginAllowed(origin, corsAllowlist)) {
       return callback(null, true);
     }
 
-    console.log('Blocked by CORS:', origin);
+    if (process.env.NODE_ENV !== 'production' && process.env.NODE_ENV !== 'test') {
+      console.warn('Blocked by CORS:', normalizeOrigin(origin));
+    }
     return callback(null, false);
   },
   credentials: true,
@@ -140,7 +104,7 @@ app.use('/api/newsletter', newsletterRoutes);
 app.get('/health', (req, res) => {
   res.status(200).json({
     success: true,
-    message: 'LifeMate API is running',
+    message: 'CareerMed API is running',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
   });
@@ -149,7 +113,7 @@ app.get('/health', (req, res) => {
 app.get('/', (req, res) => {
   res.status(200).json({
     success: true,
-    message: 'Welcome to LifeMate API - Healthcare Job Platform',
+    message: 'Welcome to CareerMed API - Healthcare Job Platform',
     version: '1.0.0',
     health: '/health',
   });

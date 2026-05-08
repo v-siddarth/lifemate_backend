@@ -9,8 +9,8 @@ describe('CORS configuration', () => {
     delete process.env.CORS_ORIGINS;
   });
 
-  it('keeps fallback production domains even when CORS_ORIGINS is set', async () => {
-    process.env.CORS_ORIGINS = 'https://career-made-frontend-ebon.vercel.app';
+  it('keeps production domains allowed while using explicit preview origins', async () => {
+    process.env.CORS_ORIGINS = 'https://careermed-preview.vercel.app';
 
     const request = require('supertest');
     const app = loadApp();
@@ -26,17 +26,35 @@ describe('CORS configuration', () => {
     expect(response.headers['access-control-allow-credentials']).toBe('true');
   });
 
-  it('allows apex and www variants for configured origins', async () => {
-    process.env.CORS_ORIGINS = 'https://careermed.in';
+  it('allows configured preview origin only when listed in CORS_ORIGINS', async () => {
+    process.env.CORS_ORIGINS = 'https://careermed-preview.vercel.app';
 
     const request = require('supertest');
     const app = loadApp();
 
     const response = await request(app)
-      .get('/health')
-      .set('Origin', 'https://www.careermed.in');
+      .options('/api/auth/login')
+      .set('Origin', 'https://careermed-preview.vercel.app')
+      .set('Access-Control-Request-Method', 'POST')
+      .set('Access-Control-Request-Headers', 'content-type');
+
+    expect(response.status).toBe(204);
+    expect(response.headers['access-control-allow-origin']).toBe('https://careermed-preview.vercel.app');
+  });
+
+  it('blocks random vercel preview origins that are not explicitly configured', async () => {
+    process.env.CORS_ORIGINS = 'https://careermed-preview.vercel.app';
+
+    const request = require('supertest');
+    const app = loadApp();
+
+    const response = await request(app)
+      .options('/api/auth/login')
+      .set('Origin', 'https://random-branch.vercel.app')
+      .set('Access-Control-Request-Method', 'POST')
+      .set('Access-Control-Request-Headers', 'content-type');
 
     expect(response.status).toBe(200);
-    expect(response.headers['access-control-allow-origin']).toBe('https://www.careermed.in');
+    expect(response.headers['access-control-allow-origin']).toBeUndefined();
   });
 });
