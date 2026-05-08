@@ -36,6 +36,7 @@ if (process.env.NODE_ENV !== 'test') {
 app.use(helmet());
 
 const corsAllowlist = buildFrontendOriginAllowlist();
+const corsAllowedMethods = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'];
 
 const corsOptions = {
   origin(origin, callback) {
@@ -51,7 +52,7 @@ const corsOptions = {
     return callback(null, false);
   },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  methods: corsAllowedMethods,
   allowedHeaders: ['Content-Type', 'Authorization'],
   optionsSuccessStatus: 204,
 };
