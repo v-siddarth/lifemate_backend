@@ -5,10 +5,13 @@ const Application = require('../models/Application');
 const AdminPricingConfig = require('../models/AdminPricingConfig');
 const {
   EMPLOYER_PLAN_IDS,
-  ALLOWED_AUDIENCES,
+  FEATURE_REGISTRY,
+  LIMIT_REGISTRY,
+  TEXT_METADATA_FIELDS,
   DEFAULT_PRICING_PLANS,
   defaultEmployerFeatureMap,
   normalizePlan,
+  validatePlanCatalogInput,
   ensurePricingConfig,
   getAllPlans,
   getPlansByAudience,
@@ -20,6 +23,10 @@ const {
   notFoundResponse,
   validationErrorResponse,
 } = require('../utils/response');
+const {
+  buildSubscriptionSnapshot,
+  syncSubscribersForPlans,
+} = require('../services/planEntitlementService');
 
 const ALLOWED_SUBSCRIPTION_PLANS = EMPLOYER_PLAN_IDS;
 const ALLOWED_SUBSCRIPTION_STATUSES = ['Active', 'Inactive', 'Cancelled', 'Expired'];
@@ -243,6 +250,9 @@ exports.getPricingPlans = async (req, res) => {
       plans,
       employerPlans: plans.filter((plan) => plan.audience === 'employer'),
       jobSeekerPlans: plans.filter((plan) => plan.audience === 'jobseeker'),
+      featureRegistry: FEATURE_REGISTRY,
+      limitRegistry: LIMIT_REGISTRY,
+      textMetadataFields: TEXT_METADATA_FIELDS,
     });
   } catch (err) {
     console.error('Admin get pricing plans error:', err);
@@ -269,18 +279,19 @@ exports.updatePricingPlans = async (req, res) => {
         { new: true, runValidators: true }
       );
       const plans = await getAllPlans({ includeInactive: true });
+      const syncSummary = await syncSubscribersForPlans(plans);
       return successResponse(res, 200, 'Pricing plans reset to defaults', {
         plans,
+        featureRegistry: FEATURE_REGISTRY,
+        limitRegistry: LIMIT_REGISTRY,
+        textMetadataFields: TEXT_METADATA_FIELDS,
+        syncSummary,
       });
     }
 
-    const invalidAudience = inputPlans
-      .map((plan) => plan?.audience)
-      .filter((audience) => !ALLOWED_AUDIENCES.includes(audience));
-    if (invalidAudience.length > 0) {
-      return validationErrorResponse(res, [
-        { field: 'audience', message: 'Plan audience must be employer or jobseeker' },
-      ]);
+    const validationErrors = validatePlanCatalogInput(inputPlans);
+    if (validationErrors.length > 0) {
+      return validationErrorResponse(res, validationErrors);
     }
 
     const invalidEmployerIds = inputPlans
@@ -340,8 +351,15 @@ exports.updatePricingPlans = async (req, res) => {
       { new: true, runValidators: true }
     );
     const plans = await getAllPlans({ includeInactive: true });
+    const syncSummary = await syncSubscribersForPlans(plans);
 
-    return successResponse(res, 200, 'Pricing plans updated', { plans });
+    return successResponse(res, 200, 'Pricing plans updated', {
+      plans,
+      featureRegistry: FEATURE_REGISTRY,
+      limitRegistry: LIMIT_REGISTRY,
+      textMetadataFields: TEXT_METADATA_FIELDS,
+      syncSummary,
+    });
   } catch (err) {
     console.error('Admin update pricing plans error:', err);
     return errorResponse(res, 500, 'Failed to update pricing plans');
@@ -447,8 +465,11 @@ exports.updateEmployerSubscription = async (req, res) => {
     const updates = {};
 
     if (plan !== undefined) {
+      const snapshot = buildSubscriptionSnapshot('employer', byId[plan]);
       updates['subscription.plan'] = plan;
-      updates['subscription.features'] = byId[plan]?.subscriptionFeatures || defaultEmployerFeatureMap.Free;
+      updates['subscription.planName'] = snapshot.planName || plan;
+      updates['subscription.features'] = snapshot.features || defaultEmployerFeatureMap.Free;
+      updates['subscription.capabilities'] = snapshot.capabilities;
     }
 
     if (status !== undefined) {

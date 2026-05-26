@@ -667,6 +667,113 @@ const jobSeekerSchema = new mongoose.Schema({
       default: true,
     },
   },
+
+  // Subscription and Billing
+  subscription: {
+    plan: {
+      type: String,
+      enum: ['Basic', 'Growth', 'Pro'],
+    },
+    status: {
+      type: String,
+      enum: ['Active', 'Inactive', 'Cancelled', 'Expired'],
+      default: 'Inactive',
+    },
+    startDate: Date,
+    endDate: Date,
+    autoRenew: {
+      type: Boolean,
+      default: false,
+    },
+    subscriptionId: {
+      type: String,
+      trim: true,
+    },
+    planId: {
+      type: String,
+      trim: true,
+    },
+    planName: {
+      type: String,
+      trim: true,
+    },
+    userType: {
+      type: String,
+      enum: ['jobseeker'],
+      default: 'jobseeker',
+    },
+    paymentId: {
+      type: String,
+      trim: true,
+    },
+    paymentStatus: {
+      type: String,
+      trim: true,
+      default: 'none',
+    },
+    isActive: {
+      type: Boolean,
+      default: false,
+    },
+    pendingPlan: {
+      type: String,
+      enum: ['Basic', 'Growth', 'Pro'],
+      default: undefined,
+    },
+    capabilities: {
+      features: {
+        type: mongoose.Schema.Types.Mixed,
+        default: {},
+      },
+      limits: {
+        type: mongoose.Schema.Types.Mixed,
+        default: {},
+      },
+      metadata: {
+        type: mongoose.Schema.Types.Mixed,
+        default: {},
+      },
+    },
+    razorpay: {
+      provider: {
+        type: String,
+        default: 'razorpay',
+      },
+      planId: {
+        type: String,
+        trim: true,
+      },
+      subscriptionId: {
+        type: String,
+        trim: true,
+      },
+      status: {
+        type: String,
+        trim: true,
+      },
+      shortUrl: {
+        type: String,
+        trim: true,
+      },
+      currentStart: Date,
+      currentEnd: Date,
+      chargeAt: Date,
+      endAt: Date,
+      lastPaymentId: {
+        type: String,
+        trim: true,
+      },
+      lastInvoiceId: {
+        type: String,
+        trim: true,
+      },
+      lastWebhookEventId: {
+        type: String,
+        trim: true,
+      },
+      lastWebhookAt: Date,
+    },
+  },
   
   // Statistics
   stats: {
@@ -705,6 +812,10 @@ jobSeekerSchema.index({ 'experience.totalYears': 1 });
 jobSeekerSchema.index({ 'jobPreferences.preferredLocations.city': 1 });
 jobSeekerSchema.index({ 'jobPreferences.preferredLocations.state': 1 });
 jobSeekerSchema.index({ 'profileCompletion': 1 });
+jobSeekerSchema.index(
+  { 'subscription.razorpay.subscriptionId': 1 },
+  { unique: true, sparse: true }
+);
 
 /**
  * Calculate profile completion percentage

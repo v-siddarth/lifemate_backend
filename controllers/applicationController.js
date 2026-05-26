@@ -18,6 +18,7 @@ const {
   createNotification,
   notifyApplicationStatusChange,
 } = require("../services/notificationService");
+const { getApplicationBarrier } = require("../services/planEntitlementService");
 
 const { uploadToCloudinary } = require("../config/cloudinary");
 
@@ -220,6 +221,17 @@ exports.apply = async (req, res) => {
         );
       }
 
+      const barrier = await getApplicationBarrier({
+        employer,
+        jobSeeker,
+        existingApplication,
+      });
+      if (barrier) {
+        return validationErrorResponse(res, [
+          { field: barrier.field, message: barrier.message },
+        ]);
+      }
+
       attemptNumber = existingAttempts + 1;
       const reappliedAt = new Date();
       existingApplication.status = "Applied";
@@ -250,6 +262,17 @@ exports.apply = async (req, res) => {
       await existingApplication.save();
       application = existingApplication;
     } else {
+      const barrier = await getApplicationBarrier({
+        employer,
+        jobSeeker,
+        existingApplication: null,
+      });
+      if (barrier) {
+        return validationErrorResponse(res, [
+          { field: barrier.field, message: barrier.message },
+        ]);
+      }
+
       const createdAt = new Date();
       payload.applyAttempts = 1;
       payload.history = [

@@ -8,6 +8,10 @@ const {
   forbiddenResponse,
 } = require('../utils/response');
 const { notifyMatchingJobSeekersForJob } = require('../services/notificationService');
+const {
+  getEmployerJobBarrier,
+  isOpenJobStatus,
+} = require('../services/planEntitlementService');
 
 const normalizeScreeningQuestions = (raw) => {
   if (!Array.isArray(raw)) return [];
@@ -195,6 +199,18 @@ exports.create = async (req, res) => {
     }
 
     const payload = { ...req.body };
+    const targetStatus = payload.status || 'Pending';
+    const barrier = await getEmployerJobBarrier({
+      employer,
+      targetStatus,
+      wantsFeatured: Boolean(payload.isFeatured),
+    });
+    if (barrier) {
+      return validationErrorResponse(res, [
+        { field: barrier.field, message: barrier.message },
+      ]);
+    }
+
     payload.employer = employer._id;
     payload.organizationName = employer.organizationName;
     payload.screeningQuestions = normalizeScreeningQuestions(payload.screeningQuestions);
@@ -234,11 +250,14 @@ exports.update = async (req, res) => {
     const job = await Job.findById(req.params.id);
     if (!job) return notFoundResponse(res, 'Job not found');
 
+    let employer;
     if (req.user.role !== 'admin') {
-      const employer = await Employer.findOne({ user: req.user._id });
+      employer = await Employer.findOne({ user: req.user._id });
       if (!employer || job.employer.toString() !== employer._id.toString()) {
         return errorResponse(res, 403, 'Not authorized to update this job');
       }
+    } else {
+      employer = await Employer.findById(job.employer);
     }
 
     const updates = { ...req.body };
@@ -246,6 +265,26 @@ exports.update = async (req, res) => {
       updates.screeningQuestions = normalizeScreeningQuestions(
         updates.screeningQuestions
       );
+    }
+
+    if (!employer) return errorResponse(res, 400, 'Employer not found for job');
+
+    const targetStatus = updates.status || job.status;
+    const wantsFeatured = Object.prototype.hasOwnProperty.call(updates, 'isFeatured')
+      ? Boolean(updates.isFeatured)
+      : Boolean(job.isFeatured);
+    const enforceJobLimit = isOpenJobStatus(targetStatus) && !isOpenJobStatus(job.status);
+    const barrier = await getEmployerJobBarrier({
+      employer,
+      targetStatus,
+      wantsFeatured,
+      excludeJobId: job._id,
+      enforceJobLimit,
+    });
+    if (barrier) {
+      return validationErrorResponse(res, [
+        { field: barrier.field, message: barrier.message },
+      ]);
     }
 
     Object.assign(job, updates);
@@ -282,6 +321,20 @@ exports.changeStatus = async (req, res) => {
     }
 
     const oldStatus = job.status;
+    if (isOpenJobStatus(status) && !isOpenJobStatus(oldStatus)) {
+      const barrier = await getEmployerJobBarrier({
+        employer,
+        targetStatus: status,
+        wantsFeatured: Boolean(job.isFeatured),
+        excludeJobId: job._id,
+      });
+      if (barrier) {
+        return validationErrorResponse(res, [
+          { field: barrier.field, message: barrier.message },
+        ]);
+      }
+    }
+
     job.status = status;
     await job.save();
 

@@ -341,6 +341,36 @@ const employerSchema = new mongoose.Schema({
       type: Boolean,
       default: false,
     },
+    subscriptionId: {
+      type: String,
+      trim: true,
+    },
+    planId: {
+      type: String,
+      trim: true,
+    },
+    planName: {
+      type: String,
+      trim: true,
+    },
+    userType: {
+      type: String,
+      enum: ['employer'],
+      default: 'employer',
+    },
+    paymentId: {
+      type: String,
+      trim: true,
+    },
+    paymentStatus: {
+      type: String,
+      trim: true,
+      default: 'none',
+    },
+    isActive: {
+      type: Boolean,
+      default: true,
+    },
     pendingPlan: {
       type: String,
       enum: ['Free', 'Basic', 'Premium', 'Enterprise'],
@@ -355,6 +385,14 @@ const employerSchema = new mongoose.Schema({
         type: Number,
         default: 10,
       },
+      teamSeats: {
+        type: Number,
+        default: 1,
+      },
+      resumeDownloads: {
+        type: Number,
+        default: 0,
+      },
       advancedSearch: {
         type: Boolean,
         default: false,
@@ -366,6 +404,48 @@ const employerSchema = new mongoose.Schema({
       customBranding: {
         type: Boolean,
         default: false,
+      },
+      featuredJobPosts: {
+        type: Boolean,
+        default: false,
+      },
+      unlimitedApplications: {
+        type: Boolean,
+        default: false,
+      },
+      analyticsDashboard: {
+        type: Boolean,
+        default: false,
+      },
+      aiCandidateMatch: {
+        type: Boolean,
+        default: false,
+      },
+      teamMembers: {
+        type: Boolean,
+        default: false,
+      },
+      resumeAccess: {
+        type: Boolean,
+        default: false,
+      },
+      bulkHiringTools: {
+        type: Boolean,
+        default: false,
+      },
+    },
+    capabilities: {
+      features: {
+        type: mongoose.Schema.Types.Mixed,
+        default: {},
+      },
+      limits: {
+        type: mongoose.Schema.Types.Mixed,
+        default: {},
+      },
+      metadata: {
+        type: mongoose.Schema.Types.Mixed,
+        default: {},
       },
     },
     razorpay: {
@@ -543,14 +623,18 @@ employerSchema.index(
  * Check if employer can post more jobs based on subscription
  */
 employerSchema.methods.canPostJob = function() {
-  return this.stats.activeJobPosts < this.subscription.features.maxJobPosts;
+  const maxJobPosts = Number(this.subscription?.features?.maxJobPosts ?? 1);
+  return this.stats.activeJobPosts < maxJobPosts;
 };
 
 /**
  * Check if employer can receive more applications based on subscription
  */
 employerSchema.methods.canReceiveApplications = function() {
-  return this.stats.totalApplications < this.subscription.features.maxApplications;
+  const features = this.subscription?.features || {};
+  if (features.unlimitedApplications === true) return true;
+  const maxApplications = Number(features.maxApplications ?? 10);
+  return this.stats.totalApplications < maxApplications;
 };
 
 /**

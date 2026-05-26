@@ -9,17 +9,25 @@ const {
   getAllPlans,
   getPlansByAudience,
   getEmployerPlanMap,
+  getPlanMapByAudience,
+  FEATURE_REGISTRY,
+  LIMIT_REGISTRY,
+  TEXT_METADATA_FIELDS,
 } = require('../services/pricingConfigService');
 const Employer = require('../models/Employer');
+const JobSeeker = require('../models/JobSeeker');
 const SubscriptionEventLog = require('../models/SubscriptionEventLog');
 const {
   getRazorpayCredentials,
-  getSubscriptionPlanId,
+  resolveSubscriptionPlan,
   createSubscription,
   cancelSubscription,
+  fetchSubscription,
+  fetchPayment,
   verifySubscriptionPaymentSignature,
   verifyWebhookSignature,
 } = require('../services/razorpayService');
+const { getOwnerEntitlements } = require('../services/planEntitlementService');
 
 const setNoStoreCacheHeaders = (res) => {
   res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -49,13 +57,67 @@ const toDateFromUnix = (value) => {
   return new Date(number * 1000);
 };
 
+const resolvePaymentStatus = (value) => {
+  const status = String(value || '').toLowerCase();
+  if (!status) return 'paid';
+  if (status === 'captured' || status === 'authorized') return 'paid';
+  return status;
+};
+
+const isActiveSubscription = (subscription) =>
+  Boolean(
+    subscription &&
+      subscription.plan &&
+      subscription.status === 'Active' &&
+      subscription.isActive !== false
+  );
+
+const getSubscriptionOwnerContext = async (user, { createJobSeeker = false } = {}) => {
+  const audience = inferAudienceFromUser(user);
+  if (audience === 'employer') {
+    const owner = await Employer.findOne({ user: user._id });
+    return { audience, owner, ownerIdField: 'employerId', displayName: owner?.organizationName || '' };
+  }
+
+  if (audience === 'jobseeker') {
+    let owner = await JobSeeker.findOne({ user: user._id });
+    if (!owner && createJobSeeker) {
+      owner = await JobSeeker.create({ user: user._id });
+    }
+    return {
+      audience,
+      owner,
+      ownerIdField: 'jobSeekerId',
+      displayName: `${user.firstName || ''} ${user.lastName || ''}`.trim(),
+    };
+  }
+
+  return { audience: null, owner: null, ownerIdField: null, displayName: '' };
+};
+
+const getProfileNotFoundMessage = (audience) =>
+  audience === 'jobseeker' ? 'Job seeker profile not found' : 'Employer profile not found';
+
+const getRazorpayErrorDetails = (err) => {
+  const statusCode = Number(err?.statusCode || err?.response?.status);
+  const error = err?.error || err?.response?.data?.error || null;
+  return {
+    statusCode: Number.isFinite(statusCode) ? statusCode : 502,
+    code: error?.code || undefined,
+    description: error?.description || err?.message || undefined,
+    reason: error?.reason || undefined,
+    source: error?.source || undefined,
+    step: error?.step || undefined,
+  };
+};
+
+const isRazorpayPlanConfigurationError = (err) =>
+  Boolean(err?.isRazorpayPlanConfigurationError);
+
 const sanitizeWebhookPayload = (payload) => {
   if (!payload || typeof payload !== 'object') return {};
   return payload;
 };
-
-const isWebhookBypassEnabled = () =>
-  String(process.env.RAZORPAY_SKIP_WEBHOOK_FOR_TEST || '').toLowerCase() === 'true';
 
 const applyPaidPlanToEmployer = async ({
   employer,
@@ -75,9 +137,24 @@ const applyPaidPlanToEmployer = async ({
   }
 
   employer.subscription.plan = planId;
+  employer.subscription.planId = subscriptionEntity?.plan_id || employer.subscription.planId;
+  employer.subscription.planName = targetPlan.displayName || planId;
+  employer.subscription.userType = 'employer';
+  employer.subscription.subscriptionId =
+    razorpaySubscriptionId || employer.subscription.subscriptionId;
+  employer.subscription.paymentId = paymentId || employer.subscription.paymentId;
+  employer.subscription.paymentStatus = resolvePaymentStatus(
+    subscriptionEntity?.payment_status || subscriptionEntity?.status || 'paid'
+  );
   employer.subscription.pendingPlan = undefined;
   employer.subscription.features = targetPlan.subscriptionFeatures;
+  employer.subscription.capabilities = {
+    features: targetPlan.features || {},
+    limits: targetPlan.limits || {},
+    metadata: targetPlan.metadata || {},
+  };
   employer.subscription.status = resolveSubscriptionStatus(razorpayStatus) || 'Active';
+  employer.subscription.isActive = employer.subscription.status === 'Active';
   employer.subscription.autoRenew = !['cancelled', 'completed', 'expired'].includes(
     String(razorpayStatus || '').toLowerCase()
   );
@@ -106,6 +183,70 @@ const applyPaidPlanToEmployer = async ({
   };
 };
 
+const applyPaidPlanToJobSeeker = async ({
+  jobSeeker,
+  planId,
+  razorpaySubscriptionId,
+  razorpayStatus,
+  invoiceId,
+  paymentId,
+  eventId,
+  eventCreatedAt,
+  subscriptionEntity,
+  paymentEntity,
+}) => {
+  const planMap = await getPlanMapByAudience('jobseeker');
+  const targetPlan = planMap[planId];
+  if (!targetPlan) {
+    throw new Error(`Job seeker plan not found for id: ${planId}`);
+  }
+
+  jobSeeker.subscription.plan = planId;
+  jobSeeker.subscription.planId = subscriptionEntity?.plan_id || jobSeeker.subscription.planId;
+  jobSeeker.subscription.planName = targetPlan.displayName || planId;
+  jobSeeker.subscription.userType = 'jobseeker';
+  jobSeeker.subscription.subscriptionId =
+    razorpaySubscriptionId || jobSeeker.subscription.subscriptionId;
+  jobSeeker.subscription.paymentId = paymentId || jobSeeker.subscription.paymentId;
+  jobSeeker.subscription.paymentStatus = resolvePaymentStatus(paymentEntity?.status || 'paid');
+  jobSeeker.subscription.pendingPlan = undefined;
+  jobSeeker.subscription.capabilities = {
+    features: targetPlan.features || {},
+    limits: targetPlan.limits || {},
+    metadata: targetPlan.metadata || {},
+  };
+  jobSeeker.subscription.status = resolveSubscriptionStatus(razorpayStatus) || 'Active';
+  jobSeeker.subscription.isActive = jobSeeker.subscription.status === 'Active';
+  jobSeeker.subscription.autoRenew = !['cancelled', 'completed', 'expired'].includes(
+    String(razorpayStatus || '').toLowerCase()
+  );
+  jobSeeker.subscription.startDate =
+    toDateFromUnix(subscriptionEntity?.current_start) || jobSeeker.subscription.startDate || new Date();
+  jobSeeker.subscription.endDate =
+    toDateFromUnix(subscriptionEntity?.current_end) || jobSeeker.subscription.endDate;
+
+  jobSeeker.subscription.razorpay = {
+    ...(jobSeeker.subscription.razorpay || {}),
+    provider: 'razorpay',
+    planId: subscriptionEntity?.plan_id || jobSeeker.subscription.razorpay?.planId,
+    subscriptionId: razorpaySubscriptionId || jobSeeker.subscription.razorpay?.subscriptionId,
+    status: String(razorpayStatus || jobSeeker.subscription.razorpay?.status || '').toLowerCase(),
+    shortUrl: subscriptionEntity?.short_url || jobSeeker.subscription.razorpay?.shortUrl,
+    currentStart:
+      toDateFromUnix(subscriptionEntity?.current_start) ||
+      jobSeeker.subscription.razorpay?.currentStart,
+    currentEnd:
+      toDateFromUnix(subscriptionEntity?.current_end) ||
+      jobSeeker.subscription.razorpay?.currentEnd,
+    chargeAt: toDateFromUnix(subscriptionEntity?.charge_at) || jobSeeker.subscription.razorpay?.chargeAt,
+    endAt: toDateFromUnix(subscriptionEntity?.end_at) || jobSeeker.subscription.razorpay?.endAt,
+    lastPaymentId: paymentId || jobSeeker.subscription.razorpay?.lastPaymentId,
+    lastInvoiceId: invoiceId || jobSeeker.subscription.razorpay?.lastInvoiceId,
+    lastWebhookEventId: eventId || jobSeeker.subscription.razorpay?.lastWebhookEventId,
+    lastWebhookAt: eventCreatedAt || new Date(),
+  };
+};
+
 const applyFreePlanToEmployer = async ({ employer, planId }) => {
   const planMap = await getEmployerPlanMap();
   const plan = planMap[planId];
@@ -113,12 +254,106 @@ const applyFreePlanToEmployer = async ({ employer, planId }) => {
     throw new Error(`Employer plan not found for id: ${planId}`);
   }
   employer.subscription.plan = planId;
+  employer.subscription.planId = planId;
+  employer.subscription.planName = plan.displayName || planId;
+  employer.subscription.userType = 'employer';
+  employer.subscription.subscriptionId = undefined;
+  employer.subscription.paymentId = undefined;
+  employer.subscription.paymentStatus = 'free';
   employer.subscription.pendingPlan = undefined;
   employer.subscription.features = plan.subscriptionFeatures;
+  employer.subscription.capabilities = {
+    features: plan.features || {},
+    limits: plan.limits || {},
+    metadata: plan.metadata || {},
+  };
   employer.subscription.status = 'Active';
+  employer.subscription.isActive = true;
   employer.subscription.autoRenew = false;
   employer.subscription.startDate = new Date();
   employer.subscription.endDate = undefined;
+};
+
+const applyPendingPaidSubscription = ({
+  owner,
+  audience,
+  plan,
+  razorpayPlanId,
+  checkoutSubscription,
+}) => {
+  const subscription = owner.subscription || {};
+  const currentlyActive = isActiveSubscription(subscription);
+
+  subscription.pendingPlan = plan.id;
+  subscription.planId = razorpayPlanId;
+  subscription.planName = plan.displayName || plan.id;
+  subscription.userType = audience;
+  subscription.subscriptionId = checkoutSubscription.id;
+  subscription.paymentStatus = 'created';
+  subscription.capabilities = {
+    features: plan.features || {},
+    limits: plan.limits || {},
+    metadata: plan.metadata || {},
+  };
+  subscription.isActive = currentlyActive;
+  if (!currentlyActive) {
+    subscription.status = 'Inactive';
+  }
+  subscription.razorpay = {
+    ...(subscription.razorpay || {}),
+    provider: 'razorpay',
+    planId: razorpayPlanId,
+    subscriptionId: checkoutSubscription.id,
+    status: checkoutSubscription.status,
+    shortUrl: checkoutSubscription.short_url,
+    chargeAt: toDateFromUnix(checkoutSubscription.charge_at),
+    currentStart: toDateFromUnix(checkoutSubscription.current_start),
+    currentEnd: toDateFromUnix(checkoutSubscription.current_end),
+  };
+
+  owner.subscription = subscription;
+};
+
+const applyPaidPlanToOwner = async ({
+  owner,
+  audience,
+  planId,
+  razorpaySubscriptionId,
+  razorpayStatus,
+  invoiceId,
+  paymentId,
+  eventId,
+  eventCreatedAt,
+  subscriptionEntity,
+  paymentEntity,
+}) => {
+  if (audience === 'employer') {
+    await applyPaidPlanToEmployer({
+      employer: owner,
+      planId,
+      razorpaySubscriptionId,
+      razorpayStatus,
+      invoiceId,
+      paymentId,
+      eventId,
+      eventCreatedAt,
+      subscriptionEntity,
+    });
+    return;
+  }
+
+  await applyPaidPlanToJobSeeker({
+    jobSeeker: owner,
+    planId,
+    razorpaySubscriptionId,
+    razorpayStatus,
+    invoiceId,
+    paymentId,
+    eventId,
+    eventCreatedAt,
+    subscriptionEntity,
+    paymentEntity,
+  });
 };
 
 // GET /api/pricing/plans
@@ -153,6 +388,9 @@ exports.listPlans = async (req, res) => {
       plans: finalPlans,
       employerPlans: finalPlans.filter((plan) => plan.audience === 'employer'),
       jobSeekerPlans: finalPlans.filter((plan) => plan.audience === 'jobseeker'),
+      featureRegistry: FEATURE_REGISTRY,
+      limitRegistry: LIMIT_REGISTRY,
+      textMetadataFields: TEXT_METADATA_FIELDS,
     });
   } catch (err) {
     console.error('List pricing plans error:', err);
@@ -163,18 +401,25 @@ exports.listPlans = async (req, res) => {
 // GET /api/pricing/my-subscription
 exports.getMySubscription = async (req, res) => {
   try {
-    if (req.user?.role !== 'employer') {
-      return forbiddenResponse(res, 'Only employer subscriptions are currently supported');
+    const { audience, owner } = await getSubscriptionOwnerContext(req.user, {
+      createJobSeeker: req.user?.role === 'jobseeker',
+    });
+
+    if (!audience) {
+      return forbiddenResponse(res, 'Only employer and job seeker subscriptions are supported');
     }
 
-    const employer = await Employer.findOne({ user: req.user._id }).select(
-      'organizationName subscription'
-    );
-    if (!employer) {
-      return notFoundResponse(res, 'Employer profile not found');
+    if (!owner) {
+      return notFoundResponse(res, getProfileNotFoundMessage(audience));
     }
 
-    return successResponse(res, 200, 'Subscription fetched', { subscription: employer.subscription });
+    const entitlements = await getOwnerEntitlements(audience, owner);
+
+    return successResponse(res, 200, 'Subscription fetched', {
+      audience,
+      subscription: owner.subscription || null,
+      entitlements,
+    });
   } catch (err) {
     console.error('Get my subscription error:', err);
     return errorResponse(res, 500, 'Failed to fetch subscription');
@@ -184,8 +429,12 @@ exports.getMySubscription = async (req, res) => {
 // POST /api/pricing/checkout-subscription
 exports.createCheckoutSubscription = async (req, res) => {
   try {
-    if (req.user?.role !== 'employer') {
-      return forbiddenResponse(res, 'Only employer subscriptions are currently supported');
+    const { audience, owner, ownerIdField, displayName } = await getSubscriptionOwnerContext(req.user, {
+      createJobSeeker: req.user?.role === 'jobseeker',
+    });
+
+    if (!audience) {
+      return forbiddenResponse(res, 'Only employer and job seeker subscriptions are supported');
     }
 
     const { planId } = req.body || {};
@@ -193,23 +442,34 @@ exports.createCheckoutSubscription = async (req, res) => {
       return validationErrorResponse(res, [{ field: 'planId', message: 'planId is required' }]);
     }
 
-    const planMap = await getEmployerPlanMap();
+    const planMap = await getPlanMapByAudience(audience);
     const selectedPlan = planMap[planId];
     if (!selectedPlan || selectedPlan.isActive === false) {
       return validationErrorResponse(res, [{ field: 'planId', message: 'Selected plan is not available' }]);
     }
 
-    const employer = await Employer.findOne({ user: req.user._id });
-    if (!employer) {
-      return notFoundResponse(res, 'Employer profile not found');
+    if (!owner) {
+      return notFoundResponse(res, getProfileNotFoundMessage(audience));
+    }
+
+    if (isActiveSubscription(owner.subscription) && owner.subscription.plan === planId) {
+      return validationErrorResponse(res, [
+        { field: 'planId', message: 'Selected plan is already active' },
+      ]);
     }
 
     if (Number(selectedPlan.price) <= 0) {
-      await applyFreePlanToEmployer({ employer, planId });
-      await employer.save();
+      if (audience !== 'employer' || planId !== 'Free') {
+        return validationErrorResponse(res, [
+          { field: 'planId', message: 'Selected paid plan is missing a positive price' },
+        ]);
+      }
+
+      await applyFreePlanToEmployer({ employer: owner, planId });
+      await owner.save();
       return successResponse(res, 200, 'Free plan activated', {
         paymentRequired: false,
-        subscription: employer.subscription,
+        subscription: owner.subscription,
       });
     }
 
@@ -222,38 +482,37 @@ exports.createCheckoutSubscription = async (req, res) => {
       );
     }
 
-    const razorpayPlanId = getSubscriptionPlanId(planId);
-    if (!razorpayPlanId) {
-      return errorResponse(
-        res,
-        500,
-        `Razorpay plan mapping missing for ${planId}. Configure RAZORPAY_PLAN_ID_${planId.toUpperCase()} or RAZORPAY_PLAN_ID_DEFAULT`
-      );
-    }
+    const resolvedPlan = await resolveSubscriptionPlan({ audience, plan: selectedPlan });
+    const razorpayPlanId = resolvedPlan.planId;
 
     const checkoutSubscription = await createSubscription({
       planId: razorpayPlanId,
       notes: {
         userId: String(req.user._id),
-        employerId: String(employer._id),
+        [ownerIdField]: String(owner._id),
+        audience,
         appPlanId: planId,
       },
     });
 
-    employer.subscription.pendingPlan = planId;
-    employer.subscription.status = 'Inactive';
-    employer.subscription.razorpay = {
-      ...(employer.subscription.razorpay || {}),
-      provider: 'razorpay',
-      planId: razorpayPlanId,
+    applyPendingPaidSubscription({
+      owner,
+      audience,
+      plan: selectedPlan,
+      razorpayPlanId,
+      checkoutSubscription,
+    });
+    await owner.save();
+
+    console.info('Checkout subscription created', {
+      userId: String(req.user._id),
+      audience,
+      appPlanId: planId,
       subscriptionId: checkoutSubscription.id,
-      status: checkoutSubscription.status,
-      shortUrl: checkoutSubscription.short_url,
-      chargeAt: toDateFromUnix(checkoutSubscription.charge_at),
-      currentStart: toDateFromUnix(checkoutSubscription.current_start),
-      currentEnd: toDateFromUnix(checkoutSubscription.current_end),
-    };
-    await employer.save();
+      razorpayPlanId,
+      razorpayPlanSource: resolvedPlan.source,
+      razorpayPlanCreated: resolvedPlan.created,
+    });
 
     return successResponse(res, 200, 'Checkout subscription created', {
       paymentRequired: true,
@@ -263,25 +522,53 @@ exports.createCheckoutSubscription = async (req, res) => {
       razorpayPlanId,
       amount: selectedPlan.price,
       currency: 'INR',
-      name: employer.organizationName || 'CareerMed',
+      name: displayName || 'CareerMed',
       description: `${selectedPlan.displayName} subscription`,
       prefill: {
-        name: employer.contactPerson?.name || employer.organizationName || '',
-        email: employer.contactPerson?.email || req.user.email || '',
-        contact: employer.contactPerson?.phone || '',
+        name:
+          audience === 'employer'
+            ? owner.contactPerson?.name || owner.organizationName || ''
+            : displayName || '',
+        email:
+          audience === 'employer'
+            ? owner.contactPerson?.email || req.user.email || ''
+            : req.user.email || '',
+        contact: audience === 'employer' ? owner.contactPerson?.phone || '' : req.user.phone || '',
       },
     });
   } catch (err) {
-    console.error('Create checkout subscription error:', err?.response?.data || err);
-    return errorResponse(res, 500, 'Failed to create checkout subscription');
+    if (isRazorpayPlanConfigurationError(err)) {
+      console.error('Razorpay plan configuration error:', err.details || err.message);
+      return errorResponse(res, 500, err.message);
+    }
+
+    const gatewayError = getRazorpayErrorDetails(err);
+    console.error('Create checkout subscription error:', {
+      statusCode: gatewayError.statusCode,
+      code: gatewayError.code,
+      description: gatewayError.description,
+      reason: gatewayError.reason,
+      source: gatewayError.source,
+      step: gatewayError.step,
+    });
+
+    const message = gatewayError.description
+      ? `Payment gateway rejected subscription: ${gatewayError.description}`
+      : 'Failed to create checkout subscription';
+    const statusCode = gatewayError.statusCode >= 400 && gatewayError.statusCode < 500 ? 400 : 502;
+    return errorResponse(res, statusCode, message);
   }
 };
 
 // POST /api/pricing/checkout-verify
 exports.verifyCheckoutSubscription = async (req, res) => {
   try {
-    if (req.user?.role !== 'employer') {
-      return forbiddenResponse(res, 'Only employer subscriptions are currently supported');
+    const { audience, owner } = await getSubscriptionOwnerContext(req.user, {
+      createJobSeeker: req.user?.role === 'jobseeker',
+    });
+
+    if (!audience) {
+      return forbiddenResponse(res, 'Only employer and job seeker subscriptions are supported');
     }
 
     const {
@@ -297,66 +584,162 @@ exports.verifyCheckoutSubscription = async (req, res) => {
       ]);
     }
 
+    const planMap = await getPlanMapByAudience(audience);
+    const selectedPlan = planMap[planId];
+    if (!selectedPlan || selectedPlan.isActive === false) {
+      return validationErrorResponse(res, [{ field: 'planId', message: 'Selected plan is not available' }]);
+    }
+
     const validSignature = verifySubscriptionPaymentSignature({
       subscriptionId,
       paymentId,
       signature,
     });
     if (!validSignature) {
+      console.warn('Invalid Razorpay checkout signature', {
+        userId: String(req.user?._id || ''),
+        audience,
+        planId,
+        subscriptionId,
+        paymentId,
+      });
       return errorResponse(res, 400, 'Invalid payment signature');
     }
 
-    const employer = await Employer.findOne({ user: req.user._id });
-    if (!employer) {
-      return notFoundResponse(res, 'Employer profile not found');
+    if (!owner) {
+      return notFoundResponse(res, getProfileNotFoundMessage(audience));
     }
 
-    const currentStoredSubscriptionId = employer.subscription?.razorpay?.subscriptionId;
-    if (currentStoredSubscriptionId && currentStoredSubscriptionId !== subscriptionId) {
+    const currentStoredSubscriptionId =
+      owner.subscription?.subscriptionId || owner.subscription?.razorpay?.subscriptionId;
+    if (!currentStoredSubscriptionId || currentStoredSubscriptionId !== subscriptionId) {
       return errorResponse(res, 400, 'Subscription mismatch detected');
     }
 
-    employer.subscription.pendingPlan = planId;
-    employer.subscription.razorpay = {
-      ...(employer.subscription.razorpay || {}),
-      provider: 'razorpay',
-      subscriptionId,
-      status: 'authenticated',
-      lastPaymentId: paymentId,
-      lastWebhookAt: new Date(),
-    };
-    if (isWebhookBypassEnabled()) {
-      await applyPaidPlanToEmployer({
-        employer,
+    const pendingPlanId = owner.subscription?.pendingPlan || owner.subscription?.plan;
+    if (pendingPlanId && pendingPlanId !== planId) {
+      console.warn('Stored pending plan mismatch during checkout verification', {
+        userId: String(req.user._id),
+        audience,
+        requestPlanId: planId,
+        pendingPlanId,
+        subscriptionId,
+      });
+      return errorResponse(res, 400, 'Subscription plan mismatch detected');
+    }
+
+    const storedRazorpayPlanId =
+      owner.subscription?.razorpay?.planId || owner.subscription?.planId || null;
+
+    let subscriptionEntity = null;
+    let paymentEntity = null;
+    try {
+      subscriptionEntity = await fetchSubscription(subscriptionId);
+    } catch (fetchErr) {
+      console.warn('Razorpay subscription fetch failed after valid checkout signature', {
+        userId: String(req.user._id),
+        audience,
         planId,
-        razorpaySubscriptionId: subscriptionId,
-        razorpayStatus: 'active',
-        invoiceId: undefined,
-        paymentId,
-        eventId: 'test-bypass',
-        eventCreatedAt: new Date(),
-        subscriptionEntity: {
-          id: subscriptionId,
-          status: 'active',
-          current_start: Math.floor(Date.now() / 1000),
-        },
+        subscriptionId,
+        error: fetchErr?.message || fetchErr,
       });
     }
-    await employer.save();
+
+    try {
+      paymentEntity = await fetchPayment(paymentId);
+    } catch (fetchErr) {
+      console.warn('Razorpay payment fetch failed after valid checkout signature', {
+        userId: String(req.user._id),
+        audience,
+        planId,
+        subscriptionId,
+        paymentId,
+        error: fetchErr?.message || fetchErr,
+      });
+    }
+
+    if (
+      subscriptionEntity?.plan_id &&
+      storedRazorpayPlanId &&
+      subscriptionEntity.plan_id !== storedRazorpayPlanId
+    ) {
+      console.warn('Razorpay subscription plan mismatch', {
+        userId: String(req.user._id),
+        audience,
+        appPlanId: planId,
+        expectedRazorpayPlanId: storedRazorpayPlanId,
+        actualRazorpayPlanId: subscriptionEntity.plan_id,
+        subscriptionId,
+      });
+      return errorResponse(res, 400, 'Subscription plan mismatch detected');
+    }
+
+    const verifiedRazorpayPlanId = subscriptionEntity?.plan_id || storedRazorpayPlanId;
+    if (!verifiedRazorpayPlanId) {
+      return errorResponse(res, 400, 'Subscription plan details missing');
+    }
+
+    if (
+      paymentEntity?.subscription_id &&
+      String(paymentEntity.subscription_id) !== String(subscriptionId)
+    ) {
+      console.warn('Razorpay payment subscription mismatch', {
+        userId: String(req.user._id),
+        audience,
+        planId,
+        subscriptionId,
+        paymentId,
+        paymentSubscriptionId: paymentEntity.subscription_id,
+      });
+      return errorResponse(res, 400, 'Payment subscription mismatch detected');
+    }
+
+    await applyPaidPlanToOwner({
+      owner,
+      audience,
+      planId,
+      razorpaySubscriptionId: subscriptionId,
+      razorpayStatus: subscriptionEntity?.status || 'active',
+      invoiceId: paymentEntity?.invoice_id,
+      paymentId,
+      eventId: 'checkout-verify',
+      eventCreatedAt: new Date(),
+      subscriptionEntity: {
+        ...(subscriptionEntity || {}),
+        id: subscriptionId,
+        plan_id: subscriptionEntity?.plan_id || verifiedRazorpayPlanId,
+        status: subscriptionEntity?.status || 'active',
+        current_start: subscriptionEntity?.current_start || Math.floor(Date.now() / 1000),
+      },
+      paymentEntity,
+    });
+    await owner.save();
+
+    console.info('Razorpay checkout verified and subscription activated', {
+      userId: String(req.user._id),
+      audience,
+      appPlanId: planId,
+      subscriptionId,
+      paymentId,
+    });
 
     return successResponse(
       res,
       200,
-      isWebhookBypassEnabled()
-        ? 'Payment verified and activated in test bypass mode.'
-        : 'Payment verified. Awaiting activation webhook.',
+      'Payment verified and subscription activated.',
       {
-      status: isWebhookBypassEnabled() ? 'active' : 'authenticated',
-      subscriptionId,
-      paymentId,
+        status: 'active',
+        subscriptionId,
+        paymentId,
+        subscription: owner.subscription,
       }
     );
   } catch (err) {
+    if (isRazorpayPlanConfigurationError(err)) {
+      console.error('Verify checkout Razorpay plan configuration error:', err.details || err.message);
+      return errorResponse(res, 500, err.message);
+    }
+
     console.error('Verify checkout subscription error:', err);
     return errorResponse(res, 500, 'Failed to verify checkout subscription');
   }
@@ -449,10 +832,18 @@ exports.handleRazorpayWebhook = async (req, res) => {
       return successResponse(res, 200, 'Webhook ignored. Subscription id missing', { ignored: true });
     }
 
-    const employer = await Employer.findOne({
+    let audience = 'employer';
+    let owner = await Employer.findOne({
       'subscription.razorpay.subscriptionId': razorpaySubscriptionId,
     });
-    if (!employer) {
+    if (!owner) {
+      owner = await JobSeeker.findOne({
+        'subscription.razorpay.subscriptionId': razorpaySubscriptionId,
+      });
+      audience = owner ? 'jobseeker' : audience;
+    }
+
+    if (!owner) {
       if (eventId) {
         await SubscriptionEventLog.create({
           eventId,
@@ -464,7 +855,7 @@ exports.handleRazorpayWebhook = async (req, res) => {
       return successResponse(res, 200, 'Webhook ignored. Subscription not mapped', { ignored: true });
     }
 
-    const pendingPlanId = employer.subscription.pendingPlan || employer.subscription.plan;
+    const pendingPlanId = owner.subscription.pendingPlan || owner.subscription.plan;
     const eventCreatedAt =
       toDateFromUnix(payload?.created_at) ||
       toDateFromUnix(paymentEntity?.created_at) ||
@@ -477,8 +868,9 @@ exports.handleRazorpayWebhook = async (req, res) => {
         normalizedEvent
       )
     ) {
-      await applyPaidPlanToEmployer({
-        employer,
+      await applyPaidPlanToOwner({
+        owner,
+        audience,
         planId: pendingPlanId,
         razorpaySubscriptionId,
         razorpayStatus: subscriptionEntity?.status || invoiceEntity?.status || 'active',
@@ -487,44 +879,45 @@ exports.handleRazorpayWebhook = async (req, res) => {
         eventId,
         eventCreatedAt,
         subscriptionEntity,
+        paymentEntity,
       });
     } else if (
       ['subscription.pending', 'subscription.halted', 'payment.failed', 'invoice.payment_failed'].includes(
         normalizedEvent
       )
     ) {
-      employer.subscription.status = 'Inactive';
-      employer.subscription.razorpay = {
-        ...(employer.subscription.razorpay || {}),
+      owner.subscription.status = 'Inactive';
+      owner.subscription.razorpay = {
+        ...(owner.subscription.razorpay || {}),
         status: String(subscriptionEntity?.status || 'pending').toLowerCase(),
-        lastPaymentId: paymentEntity?.id || employer.subscription.razorpay?.lastPaymentId,
-        lastInvoiceId: invoiceEntity?.id || employer.subscription.razorpay?.lastInvoiceId,
-        lastWebhookEventId: eventId || employer.subscription.razorpay?.lastWebhookEventId,
+        lastPaymentId: paymentEntity?.id || owner.subscription.razorpay?.lastPaymentId,
+        lastInvoiceId: invoiceEntity?.id || owner.subscription.razorpay?.lastInvoiceId,
+        lastWebhookEventId: eventId || owner.subscription.razorpay?.lastWebhookEventId,
         lastWebhookAt: eventCreatedAt,
       };
     } else if (['subscription.cancelled', 'subscription.completed', 'subscription.expired'].includes(normalizedEvent)) {
-      employer.subscription.status = normalizedEvent === 'subscription.cancelled' ? 'Cancelled' : 'Expired';
-      employer.subscription.autoRenew = false;
-      employer.subscription.pendingPlan = undefined;
-      employer.subscription.razorpay = {
-        ...(employer.subscription.razorpay || {}),
+      owner.subscription.status = normalizedEvent === 'subscription.cancelled' ? 'Cancelled' : 'Expired';
+      owner.subscription.autoRenew = false;
+      owner.subscription.pendingPlan = undefined;
+      owner.subscription.razorpay = {
+        ...(owner.subscription.razorpay || {}),
         status: String(subscriptionEntity?.status || normalizedEvent).toLowerCase(),
         currentEnd:
-          toDateFromUnix(subscriptionEntity?.current_end) || employer.subscription.razorpay?.currentEnd,
-        endAt: toDateFromUnix(subscriptionEntity?.end_at) || employer.subscription.razorpay?.endAt,
-        lastWebhookEventId: eventId || employer.subscription.razorpay?.lastWebhookEventId,
+          toDateFromUnix(subscriptionEntity?.current_end) || owner.subscription.razorpay?.currentEnd,
+        endAt: toDateFromUnix(subscriptionEntity?.end_at) || owner.subscription.razorpay?.endAt,
+        lastWebhookEventId: eventId || owner.subscription.razorpay?.lastWebhookEventId,
         lastWebhookAt: eventCreatedAt,
       };
     } else {
-      employer.subscription.razorpay = {
-        ...(employer.subscription.razorpay || {}),
-        status: String(subscriptionEntity?.status || employer.subscription.razorpay?.status || '').toLowerCase(),
-        lastWebhookEventId: eventId || employer.subscription.razorpay?.lastWebhookEventId,
+      owner.subscription.razorpay = {
+        ...(owner.subscription.razorpay || {}),
+        status: String(subscriptionEntity?.status || owner.subscription.razorpay?.status || '').toLowerCase(),
+        lastWebhookEventId: eventId || owner.subscription.razorpay?.lastWebhookEventId,
         lastWebhookAt: eventCreatedAt,
       };
     }
 
-    await employer.save();
+    await owner.save();
 
     if (eventId) {
       await SubscriptionEventLog.create({

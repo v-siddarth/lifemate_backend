@@ -255,7 +255,13 @@ exports.updateMyProfile = async (req, res) => {
       const fields = Array.isArray(sourceInfo.doctorSubSpecialties)
         ? sourceInfo.doctorSubSpecialties
         : (sourceInfo.doctorSubSpecialty ? [sourceInfo.doctorSubSpecialty] : []);
-      js.specializations = [...new Set([...specs, ...fields].filter(Boolean))];
+      const resolvedSpecs = specs.map((item) =>
+        item === 'Other' && sourceInfo.otherSpecification ? sourceInfo.otherSpecification : item
+      );
+      const resolvedFields = fields.map((item) =>
+        item === 'Other' && sourceInfo.otherDoctorSubSpecialty ? sourceInfo.otherDoctorSubSpecialty : item
+      );
+      js.specializations = [...new Set([...resolvedSpecs, ...resolvedFields].filter(Boolean))];
     }
 
     // Optional file uploads (multipart/form-data)

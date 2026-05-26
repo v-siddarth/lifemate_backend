@@ -44,16 +44,33 @@ const planConfigSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    features: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
+    },
+    limits: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
+    },
+    metadata: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
+    },
     featureList: {
       type: [String],
       default: [],
     },
+    displayFeatures: {
+      type: mongoose.Schema.Types.Mixed,
+      default: [],
+    },
+    displayLimits: {
+      type: mongoose.Schema.Types.Mixed,
+      default: [],
+    },
     subscriptionFeatures: {
-      maxJobPosts: { type: Number, default: 1, min: 0 },
-      maxApplications: { type: Number, default: 10, min: 0 },
-      advancedSearch: { type: Boolean, default: false },
-      prioritySupport: { type: Boolean, default: false },
-      customBranding: { type: Boolean, default: false },
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
     },
     isActive: {
       type: Boolean,

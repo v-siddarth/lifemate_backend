@@ -50,9 +50,21 @@ const validateEnvironment = () => {
   if (paidCheckoutEnabled) {
     missing.push(...missingFrom(['RAZORPAY_KEY_ID', 'RAZORPAY_KEY_SECRET', 'RAZORPAY_WEBHOOK_SECRET']));
 
+    if (String(process.env.RAZORPAY_KEY_ID || '').trim().startsWith('rzp_test_')) {
+      missing.push('RAZORPAY_KEY_ID (production must use a live rzp_live key)');
+    }
+
     const hasAnyPlanId = [
       'RAZORPAY_PLAN_ID_DEFAULT',
+      'RAZORPAY_PLAN_ID_EMPLOYER_BASIC',
+      'RAZORPAY_PLAN_ID_EMPLOYER_PREMIUM',
+      'RAZORPAY_PLAN_ID_EMPLOYER_ENTERPRISE',
+      'RAZORPAY_PLAN_ID_JOBSEEKER_BASIC',
+      'RAZORPAY_PLAN_ID_JOBSEEKER_GROWTH',
+      'RAZORPAY_PLAN_ID_JOBSEEKER_PRO',
       'RAZORPAY_PLAN_ID_BASIC',
+      'RAZORPAY_PLAN_ID_GROWTH',
+      'RAZORPAY_PLAN_ID_PRO',
       'RAZORPAY_PLAN_ID_PREMIUM',
       'RAZORPAY_PLAN_ID_ENTERPRISE',
     ].some((key) => String(process.env[key] || '').trim());

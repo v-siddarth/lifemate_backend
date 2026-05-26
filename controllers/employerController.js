@@ -6,6 +6,7 @@ const MANDATORY_CERTIFICATE_NAMES = [
   'Bombay Nursing Certificate',
   'Hospital Registration Certificate',
 ];
+const SPECIALIZATION_MAX_LENGTH = 100;
 
 const ALLOWED_CERTIFICATE_MIME_TYPES = new Set([
   'application/pdf',
@@ -17,6 +18,11 @@ const ALLOWED_CERTIFICATE_MIME_TYPES = new Set([
   'image/jpg',
   'image/webp',
 ]);
+
+const normalizeSpecialization = (value = '') =>
+  String(value).trim().replace(/\s+/g, ' ').slice(0, SPECIALIZATION_MAX_LENGTH);
+
+const escapeRegExp = (value = '') => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 // GET /api/employer/profile
 exports.getMyProfile = async (req, res) => {
@@ -94,6 +100,13 @@ exports.createOrUpdateProfile = async (req, res) => {
       body.numberOfBeds = Math.floor(beds);
     } else if (body.numberOfBeds === '') {
       body.numberOfBeds = undefined;
+    }
+
+    if (Array.isArray(body.specializations)) {
+      const normalizedSpecializations = body.specializations
+        .map(normalizeSpecialization)
+        .filter(Boolean);
+      body.specializations = [...new Set(normalizedSpecializations)];
     }
 
     if (Array.isArray(body.employerCertificates)) {
@@ -264,7 +277,13 @@ exports.getAllEmployers = async (req, res) => {
 
     // Filter by specialization
     if (specialization) {
-      filter.specializations = specialization;
+      const normalizedSpecialization = normalizeSpecialization(specialization);
+      if (normalizedSpecialization) {
+        filter.specializations = {
+          $regex: `^${escapeRegExp(normalizedSpecialization)}$`,
+          $options: 'i',
+        };
+      }
     }
 
     // Filter by verification status
