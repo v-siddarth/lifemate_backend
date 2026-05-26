@@ -114,6 +114,15 @@ const getRazorpayErrorDetails = (err) => {
 const isRazorpayPlanConfigurationError = (err) =>
   Boolean(err?.isRazorpayPlanConfigurationError);
 
+const isMissingRazorpayEntityError = (err) => {
+  const details = getRazorpayErrorDetails(err);
+  return (
+    details.statusCode === 400 &&
+    details.code === 'BAD_REQUEST_ERROR' &&
+    /invalid|could not be found/i.test(details.description || '')
+  );
+};
+
 const sanitizeWebhookPayload = (payload) => {
   if (!payload || typeof payload !== 'object') return {};
   return payload;
@@ -356,6 +365,88 @@ const applyPaidPlanToOwner = async ({
   });
 };
 
+const getStoredRazorpaySubscriptionId = (owner) =>
+  owner?.subscription?.razorpay?.subscriptionId || owner?.subscription?.subscriptionId || null;
+
+const getPendingPlanId = (owner) =>
+  owner?.subscription?.pendingPlan ||
+  (!isActiveSubscription(owner?.subscription) ? owner?.subscription?.plan : null);
+
+const isPaidOrAuthenticatedRazorpaySubscription = (subscriptionEntity) => {
+  const status = String(subscriptionEntity?.status || '').toLowerCase();
+  return ['authenticated', 'active'].includes(status) || Number(subscriptionEntity?.paid_count) > 0;
+};
+
+const isReusableCheckoutSubscription = (subscriptionEntity) => {
+  const status = String(subscriptionEntity?.status || '').toLowerCase();
+  return ['created', 'authenticated', 'active', 'pending'].includes(status);
+};
+
+const buildCheckoutResponsePayload = ({
+  credentials,
+  selectedPlan,
+  planId,
+  razorpayPlanId,
+  subscriptionId,
+  audience,
+  owner,
+  user,
+  displayName,
+}) => ({
+  paymentRequired: true,
+  keyId: credentials.keyId,
+  subscriptionId,
+  planId,
+  razorpayPlanId,
+  amount: selectedPlan.price,
+  currency: String(process.env.RAZORPAY_CURRENCY || 'INR').trim().toUpperCase(),
+  name: displayName || 'CareerMed',
+  description: `${selectedPlan.displayName} subscription`,
+  prefill: {
+    name:
+      audience === 'employer'
+        ? owner.contactPerson?.name || owner.organizationName || ''
+        : displayName || '',
+    email:
+      audience === 'employer'
+        ? owner.contactPerson?.email || user?.email || ''
+        : user?.email || '',
+    contact: audience === 'employer' ? owner.contactPerson?.phone || '' : user?.phone || '',
+  },
+});
+
+const reconcileStoredPaidSubscription = async ({ owner, audience, eventId }) => {
+  const subscriptionId = getStoredRazorpaySubscriptionId(owner);
+  const pendingPlanId = getPendingPlanId(owner);
+  if (!subscriptionId || !pendingPlanId || (!owner?.subscription?.pendingPlan && isActiveSubscription(owner.subscription))) {
+    return { activated: false, subscriptionEntity: null, planId: pendingPlanId };
+  }
+
+  const planMap = await getPlanMapByAudience(audience);
+  const selectedPlan = planMap[pendingPlanId];
+  if (!selectedPlan || selectedPlan.isActive === false) {
+    return { activated: false, subscriptionEntity: null, planId: pendingPlanId };
+  }
+
+  const subscriptionEntity = await fetchSubscription(subscriptionId);
+  if (!isPaidOrAuthenticatedRazorpaySubscription(subscriptionEntity)) {
+    return { activated: false, subscriptionEntity, planId: pendingPlanId };
+  }
+
+  await applyPaidPlanToOwner({
+    owner,
+    audience,
+    planId: pendingPlanId,
+    razorpaySubscriptionId: subscriptionId,
+    razorpayStatus: subscriptionEntity?.status || 'active',
+    eventId,
+    eventCreatedAt: new Date(),
+    subscriptionEntity,
+  });
+
+  return { activated: true, subscriptionEntity, planId: pendingPlanId };
+};
+
 // GET /api/pricing/plans
 exports.listPlans = async (req, res) => {
   try {
@@ -411,6 +502,25 @@ exports.getMySubscription = async (req, res) => {
 
     if (!owner) {
       return notFoundResponse(res, getProfileNotFoundMessage(audience));
+    }
+
+    try {
+      const reconciliation = await reconcileStoredPaidSubscription({
+        owner,
+        audience,
+        eventId: 'my-subscription-reconcile',
+      });
+      if (reconciliation.activated) {
+        await owner.save();
+      }
+    } catch (reconcileErr) {
+      if (!isMissingRazorpayEntityError(reconcileErr)) {
+        console.warn('Pending Razorpay subscription reconciliation skipped', {
+          userId: String(req.user?._id || ''),
+          audience,
+          error: reconcileErr?.message || reconcileErr,
+        });
+      }
     }
 
     const entitlements = await getOwnerEntitlements(audience, owner);
@@ -482,6 +592,64 @@ exports.createCheckoutSubscription = async (req, res) => {
       );
     }
 
+    const existingSubscriptionId = getStoredRazorpaySubscriptionId(owner);
+    const pendingPlanId = getPendingPlanId(owner);
+    if (existingSubscriptionId && pendingPlanId === planId) {
+      try {
+        const reconciliation = await reconcileStoredPaidSubscription({
+          owner,
+          audience,
+          eventId: 'checkout-reconcile',
+        });
+
+        if (reconciliation.activated) {
+          await owner.save();
+          return successResponse(res, 200, 'Existing payment verified and plan activated', {
+            paymentRequired: false,
+            subscription: owner.subscription,
+          });
+        }
+
+        if (
+          reconciliation.subscriptionEntity &&
+          isReusableCheckoutSubscription(reconciliation.subscriptionEntity)
+        ) {
+          return successResponse(res, 200, 'Checkout subscription resumed', {
+            ...buildCheckoutResponsePayload({
+              credentials,
+              selectedPlan,
+              planId,
+              razorpayPlanId:
+                reconciliation.subscriptionEntity.plan_id ||
+                owner.subscription?.razorpay?.planId ||
+                owner.subscription?.planId,
+              subscriptionId: existingSubscriptionId,
+              audience,
+              owner,
+              user: req.user,
+              displayName,
+            }),
+            resumed: true,
+          });
+        }
+      } catch (reconcileErr) {
+        if (!isMissingRazorpayEntityError(reconcileErr)) {
+          console.warn('Existing Razorpay subscription check failed before checkout', {
+            userId: String(req.user?._id || ''),
+            audience,
+            planId,
+            subscriptionId: existingSubscriptionId,
+            error: reconcileErr?.message || reconcileErr,
+          });
+          return errorResponse(
+            res,
+            502,
+            'Unable to verify your existing pending payment with Razorpay. Please wait a moment and try again.'
+          );
+        }
+      }
+    }
+
     const resolvedPlan = await resolveSubscriptionPlan({ audience, plan: selectedPlan });
     const razorpayPlanId = resolvedPlan.planId;
 
@@ -514,28 +682,22 @@ exports.createCheckoutSubscription = async (req, res) => {
       razorpayPlanCreated: resolvedPlan.created,
     });
 
-    return successResponse(res, 200, 'Checkout subscription created', {
-      paymentRequired: true,
-      keyId: credentials.keyId,
-      subscriptionId: checkoutSubscription.id,
-      planId,
-      razorpayPlanId,
-      amount: selectedPlan.price,
-      currency: 'INR',
-      name: displayName || 'CareerMed',
-      description: `${selectedPlan.displayName} subscription`,
-      prefill: {
-        name:
-          audience === 'employer'
-            ? owner.contactPerson?.name || owner.organizationName || ''
-            : displayName || '',
-        email:
-          audience === 'employer'
-            ? owner.contactPerson?.email || req.user.email || ''
-            : req.user.email || '',
-        contact: audience === 'employer' ? owner.contactPerson?.phone || '' : req.user.phone || '',
-      },
-    });
+    return successResponse(
+      res,
+      200,
+      'Checkout subscription created',
+      buildCheckoutResponsePayload({
+        credentials,
+        selectedPlan,
+        planId,
+        razorpayPlanId,
+        subscriptionId: checkoutSubscription.id,
+        audience,
+        owner,
+        user: req.user,
+        displayName,
+      })
+    );
   } catch (err) {
     if (isRazorpayPlanConfigurationError(err)) {
       console.error('Razorpay plan configuration error:', err.details || err.message);

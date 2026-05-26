@@ -373,7 +373,7 @@ const verifySubscriptionPaymentSignature = ({
 
   const generated = crypto
     .createHmac('sha256', secret)
-    .update(`${subscriptionId}|${paymentId}`)
+    .update(`${paymentId}|${subscriptionId}`)
     .digest('hex');
 
   return safeCompareSignature(generated, signature);

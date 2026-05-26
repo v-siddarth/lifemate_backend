@@ -43,7 +43,7 @@ describe('razorpayService', () => {
     const paymentId = 'pay_123';
     const signature = crypto
       .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
-      .update(`${subscriptionId}|${paymentId}`)
+      .update(`${paymentId}|${subscriptionId}`)
       .digest('hex');
 
     const { verifySubscriptionPaymentSignature } = require('../services/razorpayService');
