@@ -5,6 +5,51 @@ const nodemailer = require('nodemailer');
  * Handles sending various types of emails (verification, password reset, notifications, etc.)
  */
 
+let warnedAboutSenderFallback = false;
+
+const extractEmailAddress = (value) => {
+  const raw = String(value || '').trim();
+  const angleMatch = raw.match(/<([^>]+)>/);
+  return (angleMatch ? angleMatch[1] : raw).trim();
+};
+
+const getEmailDomain = (email) => {
+  const address = extractEmailAddress(email);
+  return address.includes('@') ? address.split('@').pop().toLowerCase() : '';
+};
+
+const shouldUseAuthenticatedSender = ({ emailHost, emailUser, configuredFrom }) => {
+  if (!configuredFrom) return true;
+  if (!emailUser) return false;
+
+  const host = String(emailHost || '').toLowerCase();
+  const fromAddress = extractEmailAddress(configuredFrom).toLowerCase();
+  const userAddress = extractEmailAddress(emailUser).toLowerCase();
+
+  if (!host.includes('gmail')) return false;
+  return fromAddress !== userAddress || getEmailDomain(fromAddress) !== getEmailDomain(userAddress);
+};
+
+const getSenderEmail = () => {
+  const emailHost = process.env.EMAIL_HOST || 'smtp.gmail.com';
+  const emailUser = (process.env.EMAIL_USER || '').trim();
+  const configuredFrom = (process.env.EMAIL_FROM || '').trim();
+
+  if (shouldUseAuthenticatedSender({ emailHost, emailUser, configuredFrom })) {
+    if (configuredFrom && !warnedAboutSenderFallback) {
+      warnedAboutSenderFallback = true;
+      console.warn(
+        'EMAIL_FROM does not match the Gmail SMTP account. Using EMAIL_USER as the sender for deliverability.'
+      );
+    }
+    return emailUser || configuredFrom || 'noreply@careermed.com';
+  }
+
+  return extractEmailAddress(configuredFrom) || emailUser || 'noreply@careermed.com';
+};
+
+const getSenderAddress = () => `"CareerMed" <${getSenderEmail()}>`;
+
 // Create transporter
 const createTransporter = () => {
   const emailHost = process.env.EMAIL_HOST || 'smtp.gmail.com';
@@ -35,7 +80,7 @@ const sendApplicationSubmittedToJobSeeker = async (candidateEmail, candidateName
     const transporter = createTransporter();
 
     const mailOptions = {
-      from: `"CareerMed" <${process.env.EMAIL_FROM || 'noreply@careermed.com'}>`,
+      from: getSenderAddress(),
       to: candidateEmail,
       subject: `Application Submitted: ${jobTitle} at ${companyName}`,
       html: `
@@ -125,7 +170,7 @@ const sendApplicationStatusUpdateToJobSeeker = async (candidateEmail, candidateN
     };
 
     const mailOptions = {
-      from: `"CareerMed" <${process.env.EMAIL_FROM || 'noreply@careermed.com'}>`,
+      from: getSenderAddress(),
       to: candidateEmail,
       subject: `${selectedStatus.subject} - ${companyName}`,
       html: `
@@ -175,7 +220,7 @@ const sendVerificationEmail = async (email, token, firstName) => {
     const verificationUrl = `${process.env.FRONTEND_URL}/verify-email/${token}`;
     
     const mailOptions = {
-      from: `"CareerMed" <${process.env.EMAIL_FROM || 'noreply@careermed.com'}>`,
+      from: getSenderAddress(),
       to: email,
       subject: 'Verify Your Email Address - CareerMed',
       html: `
@@ -246,7 +291,7 @@ const sendPasswordResetEmail = async (email, token, firstName) => {
     const resetUrl = `${process.env.FRONTEND_URL}/reset-password/${token}`;
     
     const mailOptions = {
-      from: `"CareerMed" <${process.env.EMAIL_FROM || 'noreply@careermed.com'}>`,
+      from: getSenderAddress(),
       to: email,
       subject: 'Reset Your Password - CareerMed',
       html: `
@@ -329,7 +374,7 @@ const sendOtpEmail = async (email, firstName, otp, purpose) => {
         : 'Use this OTP to reset your account password.';
 
     const mailOptions = {
-      from: `"CareerMed" <${process.env.EMAIL_FROM || 'noreply@careermed.com'}>`,
+      from: getSenderAddress(),
       to: email,
       subject: `${title} - CareerMed`,
       html: `
@@ -391,7 +436,7 @@ const sendApplicationNotificationEmail = async (employerEmail, employerName, job
     const transporter = createTransporter();
     
     const mailOptions = {
-      from: `"CareerMed" <${process.env.EMAIL_FROM || 'noreply@careermed.com'}>`,
+      from: getSenderAddress(),
       to: employerEmail,
       subject: `New Application for ${jobTitle} - CareerMed`,
       html: `
@@ -466,7 +511,7 @@ const sendInterviewInvitationEmail = async (candidateEmail, candidateName, jobTi
     const transporter = createTransporter();
     
     const mailOptions = {
-      from: `"CareerMed" <${process.env.EMAIL_FROM || 'noreply@careermed.com'}>`,
+      from: getSenderAddress(),
       to: candidateEmail,
       subject: `Interview Invitation for ${jobTitle} - ${companyName}`,
       html: `
@@ -545,7 +590,7 @@ const sendWelcomeEmail = async (email, firstName, role) => {
       : `${process.env.FRONTEND_URL}/employer/dashboard`;
     
     const mailOptions = {
-      from: `"CareerMed" <${process.env.EMAIL_FROM || 'noreply@careermed.com'}>`,
+      from: getSenderAddress(),
       to: email,
       subject: 'Welcome to CareerMed - Your Healthcare Career Journey Starts Here!',
       html: `
@@ -627,7 +672,7 @@ const sendNewsletterSubscriptionEmail = async (email) => {
     const transporter = createTransporter();
 
     const mailOptions = {
-      from: `"CareerMed" <${process.env.EMAIL_FROM || 'noreply@careermed.com'}>`,
+      from: getSenderAddress(),
       to: email,
       subject: 'Subscribed Successfully - CareerMed Career Updates',
       html: `
@@ -677,4 +722,9 @@ module.exports = {
   // Added exports below
   sendApplicationSubmittedToJobSeeker,
   sendApplicationStatusUpdateToJobSeeker,
+  _private: {
+    extractEmailAddress,
+    getSenderEmail,
+    shouldUseAuthenticatedSender,
+  },
 };
