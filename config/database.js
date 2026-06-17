@@ -9,10 +9,9 @@ const connectDB = async () => {
     const conn = await mongoose.connect(process.env.MONGODB_URI, {
       useNewUrlParser: true,
       useUnifiedTopology: true,
-      autoIndex: process.env.NODE_ENV !== 'production',
     });
 
-    console.log(`MongoDB Connected: ${conn.connection.host}/${conn.connection.name}`);
+    console.log(`MongoDB Connected: ${conn.connection.host}`);
     
     // Handle connection events
     mongoose.connection.on('error', (err) => {
