@@ -29,7 +29,9 @@ const {
 
 const app = express();
 
-app.set('trust proxy', 1);
+if (process.env.NODE_ENV !== 'test') {
+  connectDB();
+}
 
 app.use(helmet());
 
@@ -71,22 +73,8 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
-const requireDatabaseConnection = async (_req, res, next) => {
-  try {
-    await connectDB();
-    return next();
-  } catch (error) {
-    console.error('Database unavailable for request:', error.message);
-    return errorResponse(res, 503, 'Database temporarily unavailable. Please try again.');
-  }
-};
-
 if (process.env.NODE_ENV === 'development') {
   app.use(morgan('dev'));
-}
-
-if (process.env.NODE_ENV !== 'test') {
-  app.use('/api', requireDatabaseConnection);
 }
 
 // Razorpay webhook signature verification requires raw body.
