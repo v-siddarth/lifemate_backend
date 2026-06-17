@@ -3,6 +3,41 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
 const USER_ROLES = ['jobseeker', 'employer', 'admin'];
+const DEFAULT_REFRESH_TOKEN_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+const REFRESH_TOKEN_MAX_COUNT = 20;
+
+const parseDurationMs = (value, fallbackMs = DEFAULT_REFRESH_TOKEN_MAX_AGE_MS) => {
+  if (value === undefined || value === null || value === '') return fallbackMs;
+
+  if (typeof value === 'number') {
+    return Number.isFinite(value) && value > 0 ? value * 1000 : fallbackMs;
+  }
+
+  const normalized = String(value).trim().toLowerCase();
+  if (/^\d+$/.test(normalized)) {
+    return Number(normalized) * 1000;
+  }
+
+  const match = normalized.match(/^(\d+(?:\.\d+)?)(ms|s|m|h|d|w)$/);
+  if (!match) return fallbackMs;
+
+  const amount = Number(match[1]);
+  const unit = match[2];
+  const multipliers = {
+    ms: 1,
+    s: 1000,
+    m: 60 * 1000,
+    h: 60 * 60 * 1000,
+    d: 24 * 60 * 60 * 1000,
+    w: 7 * 24 * 60 * 60 * 1000,
+  };
+
+  const duration = amount * multipliers[unit];
+  return Number.isFinite(duration) && duration > 0 ? duration : fallbackMs;
+};
+
+const getRefreshTokenMaxAgeMs = () =>
+  parseDurationMs(process.env.JWT_REFRESH_EXPIRE || '30d', DEFAULT_REFRESH_TOKEN_MAX_AGE_MS);
 
 /**
  * User Schema - Base user model for all user types
@@ -96,7 +131,6 @@ const userSchema = new mongoose.Schema({
     createdAt: {
       type: Date,
       default: Date.now,
-      expires: 2592000, // 30 days
     },
   }],
   
@@ -124,7 +158,6 @@ userSchema.virtual('isLocked').get(function() {
 });
 
 // Index for better query performance
-userSchema.index({ email: 1 });
 userSchema.index({ role: 1 });
 userSchema.index({ isActive: 1 });
 
@@ -252,7 +285,8 @@ userSchema.methods.resetLoginAttempts = function() {
  * @param {string} token - Refresh token to add
  */
 userSchema.methods.addRefreshToken = function(token) {
-  this.refreshTokens.push({ token });
+  this.refreshTokens.push({ token, createdAt: new Date() });
+  this.pruneExpiredRefreshTokens();
   return this.save();
 };
 
@@ -261,6 +295,7 @@ userSchema.methods.addRefreshToken = function(token) {
  * @param {string} token - Refresh token to remove
  */
 userSchema.methods.removeRefreshToken = function(token) {
+  this.pruneExpiredRefreshTokens();
   this.refreshTokens = this.refreshTokens.filter(t => t.token !== token);
   return this.save();
 };
@@ -272,5 +307,35 @@ userSchema.methods.clearAllRefreshTokens = function() {
   this.refreshTokens = [];
   return this.save();
 };
+
+/**
+ * Keep refresh token subdocuments bounded without a MongoDB TTL index on users.
+ * A TTL index on refreshTokens.createdAt deletes the entire user document.
+ */
+userSchema.methods.pruneExpiredRefreshTokens = function(options = {}) {
+  const now = options.now instanceof Date ? options.now : new Date();
+  const maxAgeMs = Number(options.maxAgeMs) > 0 ? Number(options.maxAgeMs) : getRefreshTokenMaxAgeMs();
+  const maxTokens = Number(options.maxTokens) > 0 ? Number(options.maxTokens) : REFRESH_TOKEN_MAX_COUNT;
+  const cutoff = now.getTime() - maxAgeMs;
+
+  const freshTokens = (this.refreshTokens || [])
+    .filter((entry) => {
+      const createdAt = entry?.createdAt instanceof Date ? entry.createdAt : new Date(entry?.createdAt);
+      return Number.isFinite(createdAt.getTime()) && createdAt.getTime() > cutoff;
+    })
+    .sort((a, b) => {
+      const aTime = new Date(a.createdAt).getTime();
+      const bTime = new Date(b.createdAt).getTime();
+      return bTime - aTime;
+    })
+    .slice(0, maxTokens)
+    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+  this.refreshTokens = freshTokens;
+  return this;
+};
+
+userSchema.statics.getRefreshTokenMaxAgeMs = getRefreshTokenMaxAgeMs;
+userSchema.statics.parseDurationMs = parseDurationMs;
 
 module.exports = mongoose.model('User', userSchema);

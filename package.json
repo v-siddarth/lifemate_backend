@@ -10,7 +10,8 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --check .",
     "format:write": "prettier --write .",
-    "test": "jest --runInBand"
+    "test": "jest --runInBand",
+    "db:drop-dangerous-user-ttl-index": "node scripts/drop-dangerous-user-refresh-ttl-index.js"
   },
   "keywords": [
     "healthcare",
