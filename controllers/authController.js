@@ -121,7 +121,7 @@ const issueOtp = async ({ email, purpose, firstName }) => {
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
 
-  return { deliveredViaEmail };
+  return { deliveredViaEmail, otp: !deliveredViaEmail ? otp : undefined };
 };
 
 const verifyOtpRecord = async ({ email, purpose, otp }) => {
@@ -178,7 +178,7 @@ const sendRegistrationOtp = async (req, res) => {
       const otpResult = await issueOtp({ email: normalizedEmail, purpose: 'register', firstName });
       const message = otpResult.deliveredViaEmail
         ? 'OTP sent to your email address.'
-        : 'OTP generated in development fallback mode. Check backend logs.';
+        : `DEV OTP generated: ${otpResult.otp}. Check backend logs or use this OTP to proceed.`;
       return successResponse(res, 200, message);
     } catch (otpError) {
       if (otpError.statusCode === 429) {
@@ -490,7 +490,7 @@ const sendOauthOtp = async (req, res) => {
 
     const message = otpResult.deliveredViaEmail
       ? 'OTP sent to your Google email address.'
-      : 'OTP generated in development fallback mode. Check backend logs.';
+      : `DEV OTP generated: ${otpResult.otp}. Check backend logs or use this OTP to proceed.`;
     return successResponse(res, 200, message);
   } catch (error) {
     if (error.statusCode === 429) {
@@ -693,7 +693,7 @@ const sendForgotPasswordOtp = async (req, res) => {
       });
       const message = otpResult.deliveredViaEmail
         ? 'If the email exists, an OTP has been sent.'
-        : 'OTP generated in development fallback mode. Check backend logs.';
+        : `DEV OTP generated: ${otpResult.otp}. Check backend logs or use this OTP to proceed.`;
       return successResponse(res, 200, message);
     } catch (otpError) {
       if (otpError.statusCode === 429) {
