@@ -85,7 +85,7 @@ if (process.env.NODE_ENV === 'development') {
   app.use(morgan('dev'));
 }
 
-if (process.env.NODE_ENV !== 'test') {
+if (process.env.NODE_ENV !== 'test' || process.env.ENABLE_DATABASE_GUARD_IN_TEST === 'true') {
   app.use('/api', requireDatabaseConnection);
 }
 
