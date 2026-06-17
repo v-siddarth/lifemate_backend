@@ -28,6 +28,7 @@ const {
 } = require('./config/origins');
 
 const app = express();
+app.set('trust proxy', 1);
 
 if (process.env.NODE_ENV !== 'test') {
   connectDB();
