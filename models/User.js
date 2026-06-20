@@ -96,7 +96,6 @@ const userSchema = new mongoose.Schema({
     createdAt: {
       type: Date,
       default: Date.now,
-      expires: 2592000, // 30 days
     },
   }],
   
